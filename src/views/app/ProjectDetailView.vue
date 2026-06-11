@@ -1,0 +1,149 @@
+<script setup>
+import { computed } from 'vue'
+import { useRoute, RouterLink } from 'vue-router'
+import {
+  ArrowLeft, MapPin, Building2, Calendar, Wallet, FileSpreadsheet,
+  GitCompareArrows, FileText, Download, Users,
+} from 'lucide-vue-next'
+import AreaChart from '@/components/charts/AreaChart.vue'
+import { useProjectsStore } from '@/stores/projects'
+import { useToast } from '@/composables/useToast'
+import { downloadMock } from '@/utils/download'
+import { formatFull, formatMoney } from '@/utils/format'
+
+const route = useRoute()
+const store = useProjectsStore()
+const { toast } = useToast()
+const project = computed(() => store.projects.find((p) => p.id === route.params.id) || store.projects[0])
+
+function exportProject() {
+  downloadMock(`${project.value.name} — Summary.txt`)
+  toast('Project summary exported')
+}
+function downloadDoc(doc) {
+  downloadMock(`${doc.name}.${doc.type.toLowerCase()}`)
+  toast(`Downloading ${doc.name}`)
+}
+
+const statusColor = {
+  'In Progress': 'bg-primary/10 text-primary-dark',
+  Tender: 'bg-warning/10 text-warning',
+  Completed: 'bg-success/10 text-success',
+  'On Hold': 'bg-brand-border text-brand-muted',
+}
+
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
+const spend = [{ label: 'Cumulative spend', data: [20, 42, 60, 85, 105, 121].map((n) => n * 1_000_000), color: '#1CA5F6' }]
+
+const docs = [
+  { name: 'Architectural Drawings Rev C', type: 'PDF', size: '12.4 MB', date: 'Jun 9' },
+  { name: 'Structural Plans', type: 'DWG', size: '8.1 MB', date: 'Jun 7' },
+  { name: 'Substructure BOQ', type: 'XLSX', size: '420 KB', date: 'Jun 5' },
+  { name: 'Material Specifications', type: 'PDF', size: '2.2 MB', date: 'Jun 2' },
+]
+</script>
+
+<template>
+  <div class="space-y-6">
+    <RouterLink to="/app/projects" class="inline-flex items-center gap-1.5 text-sm font-medium text-brand-muted hover:text-secondary">
+      <ArrowLeft class="h-4 w-4" /> Back to projects
+    </RouterLink>
+
+    <!-- Header -->
+    <div class="card overflow-hidden">
+      <div :class="`bg-gradient-to-br ${project.cover}`" class="relative h-32">
+        <div class="absolute inset-0 bg-[radial-gradient(circle_at_70%_20%,rgba(255,255,255,0.25),transparent_60%)]"></div>
+      </div>
+      <div class="p-6">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div class="flex items-center gap-3">
+              <h2 class="font-display text-2xl font-bold text-secondary">{{ project.name }}</h2>
+              <span class="badge" :class="statusColor[project.status]">{{ project.status }}</span>
+            </div>
+            <div class="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-brand-muted">
+              <span class="flex items-center gap-1.5"><Building2 class="h-4 w-4" /> {{ project.client }}</span>
+              <span class="flex items-center gap-1.5"><MapPin class="h-4 w-4" /> {{ project.location }}</span>
+              <span class="flex items-center gap-1.5"><Calendar class="h-4 w-4" /> Updated {{ project.updated }}</span>
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <RouterLink to="/app/boq" class="btn-outline btn-md"><FileSpreadsheet class="h-4 w-4" /> Open BOQ</RouterLink>
+            <button class="btn-primary btn-md" @click="exportProject"><Download class="h-4 w-4" /> Export</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="card p-5">
+        <p class="text-sm text-brand-muted">Total Budget</p>
+        <p class="mt-1 font-display text-xl font-bold text-secondary">{{ formatMoney(project.budget) }}</p>
+      </div>
+      <div class="card p-5">
+        <p class="text-sm text-brand-muted">Spent to Date</p>
+        <p class="mt-1 font-display text-xl font-bold text-secondary">{{ formatMoney(project.spent) }}</p>
+      </div>
+      <div class="card p-5">
+        <p class="text-sm text-brand-muted">Remaining</p>
+        <p class="mt-1 font-display text-xl font-bold text-success">{{ formatMoney(project.budget - project.spent) }}</p>
+      </div>
+      <div class="card p-5">
+        <p class="text-sm text-brand-muted">Completion</p>
+        <p class="mt-1 font-display text-xl font-bold text-secondary">{{ project.progress }}%</p>
+      </div>
+    </div>
+
+    <div class="grid gap-6 lg:grid-cols-3">
+      <!-- Spend chart -->
+      <div class="card p-6 lg:col-span-2">
+        <h3 class="mb-1 font-display text-lg font-bold text-secondary">Spend Tracking</h3>
+        <p class="mb-4 text-sm text-brand-muted">Cumulative project expenditure</p>
+        <AreaChart :labels="months" :datasets="spend" currency :height="280" />
+      </div>
+
+      <!-- Team + quick links -->
+      <div class="space-y-6">
+        <div class="card p-6">
+          <div class="mb-4 flex items-center gap-2">
+            <Users class="h-4 w-4 text-primary" />
+            <h3 class="font-display font-bold text-secondary">Project Team</h3>
+          </div>
+          <div class="space-y-3">
+            <div v-for="(t, i) in project.team" :key="t" class="flex items-center gap-3">
+              <div class="grid h-9 w-9 place-items-center rounded-full bg-brand-gradient text-xs font-semibold text-white">{{ t }}</div>
+              <div>
+                <p class="text-sm font-semibold text-secondary">Team Member {{ i + 1 }}</p>
+                <p class="text-xs text-brand-light">{{ ['Lead QS', 'Estimator', 'Project Manager', 'Surveyor'][i % 4] }}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card p-6">
+          <h3 class="mb-3 font-display font-bold text-secondary">Quick Actions</h3>
+          <div class="space-y-2">
+            <RouterLink to="/app/variations" class="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-brand-muted hover:bg-brand-bg hover:text-secondary"><GitCompareArrows class="h-4 w-4" /> Manage variations</RouterLink>
+            <RouterLink to="/app/reports" class="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-brand-muted hover:bg-brand-bg hover:text-secondary"><FileText class="h-4 w-4" /> Generate report</RouterLink>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Documents -->
+    <div class="card p-6">
+      <h3 class="mb-4 font-display text-lg font-bold text-secondary">Documents</h3>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div v-for="d in docs" :key="d.name" class="flex items-center gap-3 rounded-xl border border-brand-border-light p-3 transition-colors hover:border-primary/30 hover:bg-brand-bg">
+          <div class="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-xs font-bold text-primary-dark">{{ d.type }}</div>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-semibold text-secondary">{{ d.name }}</p>
+            <p class="text-xs text-brand-light">{{ d.size }} · {{ d.date }}</p>
+          </div>
+          <button class="grid h-8 w-8 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary" @click="downloadDoc(d)"><Download class="h-4 w-4" /></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
