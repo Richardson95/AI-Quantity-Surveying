@@ -38,6 +38,7 @@ const routes = [
       { path: 'takeoff', name: 'takeoff', component: () => import('@/views/app/TakeoffView.vue') },
       { path: 'variations', name: 'variations', component: () => import('@/views/app/VariationsView.vue') },
       { path: 'pricing-db', name: 'pricing-db', component: () => import('@/views/app/PricingDbView.vue') },
+      { path: 'vendors', name: 'vendors', component: () => import('@/views/app/VendorsView.vue') },
       { path: 'reports', name: 'reports', component: () => import('@/views/app/ReportsView.vue') },
       { path: 'assistant', name: 'assistant', component: () => import('@/views/app/AssistantView.vue') },
       { path: 'team', name: 'team', component: () => import('@/views/app/TeamView.vue') },

@@ -4,7 +4,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
   LayoutDashboard, FolderKanban, FileSpreadsheet, Calculator, Ruler,
   GitCompareArrows, Database, BarChart3, Sparkles, Users, CreditCard,
-  Settings, Search, Bell, Menu, X, Plus, LogOut, ChevronDown,
+  Settings, Search, Bell, Menu, X, Plus, LogOut, ChevronDown, Store,
 } from 'lucide-vue-next'
 import BrandLogo from '@/components/BrandLogo.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -44,6 +44,12 @@ const sections = [
       { name: 'Cost Estimation', to: '/app/estimation', icon: Calculator },
       { name: 'Variations', to: '/app/variations', icon: GitCompareArrows },
       { name: 'Pricing Database', to: '/app/pricing-db', icon: Database },
+    ],
+  },
+  {
+    label: 'Marketplace',
+    items: [
+      { name: 'Vendors', to: '/app/vendors', icon: Store },
     ],
   },
   {

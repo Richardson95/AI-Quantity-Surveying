@@ -1,12 +1,15 @@
 <script setup>
 import { ref } from 'vue'
-import { Calculator, TrendingUp, Sparkles, RefreshCw, Globe, Package, HardHat, Wrench } from 'lucide-vue-next'
+import { RouterLink } from 'vue-router'
+import { Calculator, TrendingUp, Sparkles, RefreshCw, Globe, Package, HardHat, Wrench, Store, Trash2, ArrowRight } from 'lucide-vue-next'
 import BarChart from '@/components/charts/BarChart.vue'
 import DoughnutChart from '@/components/charts/DoughnutChart.vue'
 import { useToast } from '@/composables/useToast'
+import { useVendorsStore } from '@/stores/vendors'
 import { formatFull } from '@/utils/format'
 
 const { toast } = useToast()
+const vendors = useVendorsStore()
 const region = ref('Lagos')
 const regions = ['Lagos', 'Abuja', 'Port Harcourt', 'Kano']
 const estimating = ref(false)
@@ -134,6 +137,58 @@ const rateAnalysis = [
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Vendor-confirmed prices -->
+    <div class="card overflow-hidden">
+      <div class="flex items-center justify-between gap-3 border-b border-brand-border-light p-5">
+        <div class="flex items-center gap-2">
+          <Store class="h-5 w-5 text-primary" />
+          <h3 class="font-display font-bold text-secondary">Vendor-Confirmed Prices</h3>
+          <span v-if="vendors.savedCount" class="badge bg-primary/10 text-primary-dark">{{ vendors.savedCount }}</span>
+        </div>
+        <RouterLink to="/app/vendors" class="inline-flex items-center gap-1 text-sm font-semibold text-primary-dark hover:underline">
+          Marketplace <ArrowRight class="h-3.5 w-3.5" />
+        </RouterLink>
+      </div>
+
+      <div v-if="vendors.savedCount" class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-brand-border-light text-left text-xs font-semibold uppercase tracking-wide text-brand-light">
+              <th class="px-5 py-3">Item</th>
+              <th class="px-3 py-3">Vendor</th>
+              <th class="px-3 py-3">Unit</th>
+              <th class="px-3 py-3 text-right">Rate</th>
+              <th class="px-5 py-3"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in vendors.savedPrices" :key="p.id" class="border-b border-brand-border-light last:border-0 hover:bg-brand-bg">
+              <td class="px-5 py-3 font-medium text-secondary">{{ p.item }}</td>
+              <td class="px-3 py-3 text-brand-muted">{{ p.vendor }}</td>
+              <td class="px-3 py-3 text-brand-muted">{{ p.unit }}</td>
+              <td class="px-3 py-3 text-right font-bold text-secondary">{{ formatFull(p.rate) }}</td>
+              <td class="px-5 py-3 text-right">
+                <button class="grid h-8 w-8 place-items-center rounded-lg text-brand-light transition-colors hover:bg-danger/10 hover:text-danger" title="Remove price"
+                  @click="vendors.removeSavedPrice(p.id); toast('Price removed', 'info')">
+                  <Trash2 class="h-4 w-4" />
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="flex items-start gap-1.5 px-5 py-3 text-xs text-brand-light">
+          <Sparkles class="mt-0.5 h-3.5 w-3.5 shrink-0" /> Live rates you confirmed with vendors — these feed straight into your estimate.
+        </p>
+      </div>
+
+      <div v-else class="flex flex-col items-center justify-center gap-3 py-12 text-center">
+        <div class="grid h-14 w-14 place-items-center rounded-2xl bg-brand-bg text-brand-light"><Store class="h-6 w-6" /></div>
+        <p class="font-semibold text-secondary">No vendor prices yet</p>
+        <p class="mx-auto max-w-sm text-sm text-brand-muted">Unlock a vendor in the marketplace, confirm a price by phone, then save it — it'll show up here for your estimate.</p>
+        <RouterLink to="/app/vendors" class="btn-primary btn-md"><Store class="h-4 w-4" /> Browse vendors</RouterLink>
       </div>
     </div>
   </div>
