@@ -148,11 +148,12 @@ function logout() {
       <header class="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-brand-border-light bg-white/80 px-4 backdrop-blur sm:px-6">
         <button class="btn btn-ghost btn-sm lg:hidden" @click="sidebarOpen = true"><Menu class="h-5 w-5" /></button>
 
-        <h1 class="font-display text-lg font-bold text-secondary sm:text-xl">{{ pageTitle }}</h1>
+        <h1 class="min-w-0 flex-1 truncate font-display text-lg font-bold text-secondary sm:flex-none sm:text-xl">{{ pageTitle }}</h1>
 
-        <div class="relative ml-auto hidden md:block">
+        <div class="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
+        <div class="relative hidden md:block">
           <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-light" />
-          <input class="input w-64 pl-9" placeholder="Search projects, BOQs…" />
+          <input class="input w-56 pl-9 lg:w-64" placeholder="Search projects, BOQs…" />
         </div>
 
         <div class="relative">
@@ -201,6 +202,7 @@ function logout() {
               </button>
             </div>
           </transition>
+        </div>
         </div>
       </header>
 
