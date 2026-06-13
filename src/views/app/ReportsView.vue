@@ -54,7 +54,7 @@ const fmtColor = { PDF: 'bg-danger/10 text-danger', XLSX: 'bg-success/10 text-su
     </div>
 
     <!-- KPIs -->
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
       <div v-for="k in kpis" :key="k.label" class="card p-5">
         <div :class="k.color" class="grid h-10 w-10 place-items-center rounded-xl"><component :is="k.icon" class="h-5 w-5" /></div>
         <p class="mt-3 text-sm text-brand-muted">{{ k.label }}</p>
@@ -83,14 +83,18 @@ const fmtColor = { PDF: 'bg-danger/10 text-danger', XLSX: 'bg-success/10 text-su
         <button class="text-sm font-semibold text-primary hover:underline" @click="viewAll">View all</button>
       </div>
       <div class="divide-y divide-brand-border-light">
-        <div v-for="r in reports" :key="r.name" class="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-brand-bg">
-          <div class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><component :is="r.icon" class="h-5 w-5" /></div>
-          <div class="min-w-0 flex-1">
-            <p class="truncate font-semibold text-secondary">{{ r.name }}</p>
-            <p class="text-xs text-brand-light">{{ r.type }} report · {{ r.date }}</p>
+        <div v-for="r in reports" :key="r.name" class="flex flex-col gap-3 px-5 py-4 transition-colors hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
+          <div class="flex min-w-0 flex-1 items-center gap-4">
+            <div class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><component :is="r.icon" class="h-5 w-5" /></div>
+            <div class="min-w-0">
+              <p class="truncate font-semibold text-secondary">{{ r.name }}</p>
+              <p class="text-xs text-brand-light">{{ r.type }} report · {{ r.date }}</p>
+            </div>
           </div>
-          <span class="badge" :class="fmtColor[r.format]">{{ r.format }}</span>
-          <button class="grid h-9 w-9 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary" @click="downloadReport(r)"><Download class="h-4 w-4" /></button>
+          <div class="flex items-center gap-3 pl-14 sm:pl-0">
+            <span class="badge whitespace-nowrap" :class="fmtColor[r.format]">{{ r.format }}</span>
+            <button class="ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary sm:ml-0" @click="downloadReport(r)"><Download class="h-4 w-4" /></button>
+          </div>
         </div>
       </div>
     </div>

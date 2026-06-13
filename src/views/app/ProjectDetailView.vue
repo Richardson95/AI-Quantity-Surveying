@@ -76,7 +76,7 @@ const docs = [
     </div>
 
     <!-- Stats -->
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
       <div class="card p-5">
         <p class="text-sm text-brand-muted">Total Budget</p>
         <p class="mt-1 font-display text-xl font-bold text-secondary">{{ formatMoney(project.budget) }}</p>

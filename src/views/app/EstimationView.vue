@@ -85,7 +85,7 @@ const rateAnalysis = [
     </div>
 
     <!-- Category cards -->
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
       <div v-for="c in categories" :key="c.name" class="card p-5">
         <div class="flex items-center justify-between">
           <div :class="c.color" class="grid h-10 w-10 place-items-center rounded-xl"><component :is="c.icon" class="h-5 w-5" /></div>

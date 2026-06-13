@@ -58,7 +58,7 @@ function pct(u, t) {
     </div>
 
     <!-- Usage -->
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
       <div v-for="u in usage" :key="u.label" class="card p-5">
         <p class="text-sm text-brand-muted">{{ u.label }}</p>
         <p class="mt-1 font-display text-xl font-bold text-secondary">
@@ -93,15 +93,19 @@ function pct(u, t) {
           <h3 class="font-display font-bold text-secondary">Invoices</h3>
         </div>
         <div class="divide-y divide-brand-border-light">
-          <div v-for="inv in invoices" :key="inv.id" class="flex items-center gap-4 px-5 py-3.5 hover:bg-brand-bg">
-            <div class="grid h-9 w-9 place-items-center rounded-lg bg-primary/10 text-primary-dark text-xs font-bold">PDF</div>
-            <div class="min-w-0 flex-1">
-              <p class="font-mono text-sm font-semibold text-secondary">{{ inv.id }}</p>
-              <p class="text-xs text-brand-light">{{ inv.date }}</p>
+          <div v-for="inv in invoices" :key="inv.id" class="flex flex-col gap-3 px-5 py-3.5 hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
+            <div class="flex min-w-0 flex-1 items-center gap-4">
+              <div class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-dark text-xs font-bold">PDF</div>
+              <div class="min-w-0">
+                <p class="truncate font-mono text-sm font-semibold text-secondary">{{ inv.id }}</p>
+                <p class="text-xs text-brand-light">{{ inv.date }}</p>
+              </div>
             </div>
-            <span class="font-semibold text-secondary">₦{{ inv.amount.toLocaleString() }}</span>
-            <span class="badge bg-success/10 text-success"><Check class="h-3 w-3" /> {{ inv.status }}</span>
-            <button class="grid h-9 w-9 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary" @click="downloadInvoice(inv)"><Download class="h-4 w-4" /></button>
+            <div class="flex items-center gap-3 pl-[52px] sm:pl-0">
+              <span class="font-semibold text-secondary">₦{{ inv.amount.toLocaleString() }}</span>
+              <span class="badge whitespace-nowrap bg-success/10 text-success"><Check class="h-3 w-3" /> {{ inv.status }}</span>
+              <button class="ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary sm:ml-0" @click="downloadInvoice(inv)"><Download class="h-4 w-4" /></button>
+            </div>
           </div>
         </div>
       </div>

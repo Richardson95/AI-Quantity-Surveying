@@ -50,7 +50,7 @@ const statusColor = {
     </div>
 
     <!-- Stats -->
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
       <StatCard label="Active Projects" :value="String(store.activeCount)" delta="12%" trend="up" :icon="FolderKanban" icon-class="bg-primary/10 text-primary" />
       <StatCard label="Total Portfolio Value" :value="formatMoney(store.totalBudget)" delta="8.4%" trend="up" :icon="Wallet" icon-class="bg-success/10 text-success" />
       <StatCard label="BOQs Generated" value="146" delta="23%" trend="up" :icon="FileSpreadsheet" icon-class="bg-warning/10 text-warning" />

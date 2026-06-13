@@ -56,7 +56,7 @@ const roles = [
     </div>
 
     <!-- Roles overview -->
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
       <div v-for="r in roles" :key="r.name" class="card p-5">
         <div class="flex items-center justify-between">
           <div class="grid h-10 w-10 place-items-center rounded-xl bg-primary/10 text-primary"><component :is="r.icon" class="h-5 w-5" /></div>
@@ -73,18 +73,22 @@ const roles = [
         <h3 class="font-display font-bold text-secondary">Members</h3>
       </div>
       <div class="divide-y divide-brand-border-light">
-        <div v-for="m in members" :key="m.email" class="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-brand-bg">
-          <div class="relative">
-            <div class="grid h-11 w-11 place-items-center rounded-full bg-brand-gradient text-sm font-bold text-white">{{ m.avatar }}</div>
-            <span v-if="m.online" class="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-success ring-2 ring-white"></span>
+        <div v-for="m in members" :key="m.email" class="flex flex-col gap-3 px-5 py-4 transition-colors hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
+          <div class="flex min-w-0 flex-1 items-center gap-4">
+            <div class="relative shrink-0">
+              <div class="grid h-11 w-11 place-items-center rounded-full bg-brand-gradient text-sm font-bold text-white">{{ m.avatar }}</div>
+              <span v-if="m.online" class="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-success ring-2 ring-white"></span>
+            </div>
+            <div class="min-w-0">
+              <p class="truncate font-semibold text-secondary">{{ m.name }}</p>
+              <p class="mt-0.5 flex items-center gap-1.5 text-xs text-brand-muted"><Mail class="h-3 w-3 shrink-0" /> <span class="truncate">{{ m.email }}</span></p>
+            </div>
           </div>
-          <div class="min-w-0 flex-1">
-            <p class="font-semibold text-secondary">{{ m.name }}</p>
-            <p class="flex items-center gap-1.5 text-xs text-brand-muted"><Mail class="h-3 w-3" /> {{ m.email }}</p>
+          <div class="flex flex-wrap items-center gap-2 pl-[60px] sm:pl-0">
+            <span class="badge whitespace-nowrap" :class="roleColor[m.role]">{{ m.role }}</span>
+            <span class="badge whitespace-nowrap" :class="m.status === 'Active' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'">{{ m.status }}</span>
+            <button class="ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-secondary sm:ml-0" @click="memberOptions(m)"><MoreHorizontal class="h-4 w-4" /></button>
           </div>
-          <span class="badge" :class="roleColor[m.role]">{{ m.role }}</span>
-          <span class="badge" :class="m.status === 'Active' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'">{{ m.status }}</span>
-          <button class="grid h-9 w-9 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-secondary" @click="memberOptions(m)"><MoreHorizontal class="h-4 w-4" /></button>
         </div>
       </div>
     </div>
