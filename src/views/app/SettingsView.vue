@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { User, Bell, Lock, Globe, Building2, Camera, Check } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -17,36 +17,119 @@ const tabs = [
   { id: 'preferences', name: 'Preferences', icon: Globe },
 ]
 
-const form = ref({
-  name: auth.user.name,
-  email: auth.user.email,
-  role: auth.user.role,
-  company: auth.user.company,
-  phone: '+234 801 234 5678',
-})
+const PREFS_KEY = 'buildq.settings'
 
-const notifications = ref({
-  boqComplete: true, variations: true, teamActivity: false, priceAlerts: true, weekly: true,
-})
-
-function save() {
-  auth.user.name = form.value.name
-  saved.value = true
-  toast('Changes saved')
-  setTimeout(() => (saved.value = false), 2000)
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
 }
-function cancel() {
-  form.value = {
+
+const defaults = {
+  industry: 'Construction & QS',
+  country: 'Nigeria',
+  currency: '₦ Naira (NGN)',
+  standard: 'RICS / SMM7',
+  language: 'English',
+  dateFormat: 'DD/MM/YYYY',
+  defaultRegion: 'Lagos',
+  notifications: { boqComplete: true, variations: true, teamActivity: false, priceAlerts: true, weekly: true },
+}
+
+const stored = loadPrefs()
+
+function blankForm() {
+  return {
     name: auth.user.name,
     email: auth.user.email,
     role: auth.user.role,
     company: auth.user.company,
-    phone: '+234 801 234 5678',
+    phone: auth.user.phone,
+    ...defaults,
+    ...(stored || {}),
+    notifications: { ...defaults.notifications, ...((stored || {}).notifications || {}) },
   }
+}
+
+const form = ref(blankForm())
+// Kept separate so the toggles bind cleanly, but saved with everything else.
+const notifications = computed(() => form.value.notifications)
+
+const passwords = ref({ current: '', next: '', confirm: '' })
+const errors = ref('')
+
+// Every field on every tab is persisted — previously only the name survived.
+function save() {
+  errors.value = ''
+  if (!form.value.name.trim()) {
+    errors.value = 'Your name cannot be empty.'
+    return
+  }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.value.email)) {
+    errors.value = 'Enter a valid email address.'
+    return
+  }
+  if (tab.value === 'security' && (passwords.value.next || passwords.value.confirm || passwords.value.current)) {
+    if (passwords.value.next.length < 8) {
+      errors.value = 'New password must be at least 8 characters.'
+      return
+    }
+    if (passwords.value.next !== passwords.value.confirm) {
+      errors.value = 'The new passwords do not match.'
+      return
+    }
+    passwords.value = { current: '', next: '', confirm: '' }
+    toast('Password updated')
+  }
+
+  auth.updateProfile({
+    name: form.value.name.trim(),
+    email: form.value.email.trim(),
+    role: form.value.role,
+    company: form.value.company,
+    phone: form.value.phone,
+  })
+
+  const { name, email, role, company, phone, ...prefs } = form.value
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    /* storage unavailable — keep in-memory only */
+  }
+
+  saved.value = true
+  toast('Changes saved')
+  setTimeout(() => (saved.value = false), 2000)
+}
+
+function cancel() {
+  form.value = blankForm()
+  passwords.value = { current: '', next: '', confirm: '' }
+  errors.value = ''
   toast('Changes discarded', 'info')
 }
+
+const photoInput = ref(null)
 function changePhoto() {
-  toast('Photo upload (mock)', 'info')
+  photoInput.value?.click()
+}
+function onPhotoPicked(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    toast('Choose an image file', 'warning')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    auth.updateProfile({ photo: reader.result })
+    toast('Profile photo updated')
+  }
+  reader.readAsDataURL(file)
 }
 </script>
 
@@ -74,8 +157,10 @@ function changePhoto() {
           <h3 class="font-display text-lg font-bold text-secondary">Profile</h3>
           <div class="flex items-center gap-5">
             <div class="relative">
-              <div class="grid h-20 w-20 place-items-center rounded-2xl bg-brand-gradient text-2xl font-bold text-white">{{ auth.user.avatar }}</div>
-              <button class="absolute -bottom-1 -right-1 grid h-8 w-8 place-items-center rounded-lg border border-brand-border bg-white text-brand-muted shadow-sm hover:text-primary" @click="changePhoto"><Camera class="h-4 w-4" /></button>
+              <img v-if="auth.user.photo" :src="auth.user.photo" alt="Profile photo" class="h-20 w-20 rounded-2xl object-cover" />
+              <div v-else class="grid h-20 w-20 place-items-center rounded-2xl bg-brand-gradient text-2xl font-bold text-white">{{ auth.user.avatar }}</div>
+              <input ref="photoInput" type="file" accept="image/*" class="hidden" @change="onPhotoPicked" />
+              <button class="absolute -bottom-1 -right-1 grid h-8 w-8 place-items-center rounded-lg border border-brand-border bg-white text-brand-muted shadow-sm hover:text-primary" title="Change photo" @click="changePhoto"><Camera class="h-4 w-4" /></button>
             </div>
             <div>
               <p class="font-semibold text-secondary">{{ form.name }}</p>
@@ -95,12 +180,12 @@ function changePhoto() {
           <h3 class="font-display text-lg font-bold text-secondary">Company</h3>
           <div class="grid gap-5 sm:grid-cols-2">
             <div><label class="label">Company name</label><input v-model="form.company" class="input" /></div>
-            <div><label class="label">Industry</label><input value="Construction & QS" class="input" /></div>
+            <div><label class="label">Industry</label><input v-model="form.industry" class="input" /></div>
             <div><label class="label">Country</label>
-              <select class="input"><option>Nigeria</option><option>Ghana</option><option>Kenya</option><option>South Africa</option></select>
+              <select v-model="form.country" class="input"><option>Nigeria</option><option>Ghana</option><option>Kenya</option><option>South Africa</option></select>
             </div>
             <div><label class="label">Default currency</label>
-              <select class="input"><option>₦ Naira (NGN)</option><option>$ Dollar (USD)</option><option>£ Pound (GBP)</option></select>
+              <select v-model="form.currency" class="input"><option>₦ Naira (NGN)</option><option>$ Dollar (USD)</option><option>£ Pound (GBP)</option></select>
             </div>
           </div>
         </div>
@@ -125,10 +210,10 @@ function changePhoto() {
         <div v-else-if="tab === 'security'" class="space-y-6">
           <h3 class="font-display text-lg font-bold text-secondary">Security</h3>
           <div class="grid gap-5 sm:grid-cols-2">
-            <div><label class="label">Current password</label><input type="password" class="input" placeholder="••••••••" /></div>
+            <div><label class="label">Current password</label><input v-model="passwords.current" type="password" class="input" placeholder="••••••••" /></div>
             <div></div>
-            <div><label class="label">New password</label><input type="password" class="input" placeholder="••••••••" /></div>
-            <div><label class="label">Confirm password</label><input type="password" class="input" placeholder="••••••••" /></div>
+            <div><label class="label">New password</label><input v-model="passwords.next" type="password" class="input" placeholder="At least 8 characters" /></div>
+            <div><label class="label">Confirm password</label><input v-model="passwords.confirm" type="password" class="input" placeholder="••••••••" /></div>
           </div>
           <div class="flex items-center justify-between rounded-xl border border-brand-border-light p-4">
             <div>
@@ -144,21 +229,22 @@ function changePhoto() {
           <h3 class="font-display text-lg font-bold text-secondary">Preferences</h3>
           <div class="grid gap-5 sm:grid-cols-2">
             <div><label class="label">Measurement standard</label>
-              <select class="input"><option>RICS / SMM7</option><option>NIQS</option><option>POMI</option><option>Metric (ISO)</option></select>
+              <select v-model="form.standard" class="input"><option>RICS / SMM7</option><option>NIQS</option><option>POMI</option><option>Metric (ISO)</option></select>
             </div>
             <div><label class="label">Language</label>
-              <select class="input"><option>English</option><option>French</option></select>
+              <select v-model="form.language" class="input"><option>English</option><option>French</option></select>
             </div>
             <div><label class="label">Date format</label>
-              <select class="input"><option>DD/MM/YYYY</option><option>MM/DD/YYYY</option></select>
+              <select v-model="form.dateFormat" class="input"><option>DD/MM/YYYY</option><option>MM/DD/YYYY</option></select>
             </div>
             <div><label class="label">Default region pricing</label>
-              <select class="input"><option>Lagos</option><option>Abuja</option><option>Port Harcourt</option></select>
+              <select v-model="form.defaultRegion" class="input"><option>Lagos</option><option>Abuja</option><option>Port Harcourt</option><option>Kano</option></select>
             </div>
           </div>
         </div>
 
-        <div class="mt-8 flex items-center justify-end gap-3 border-t border-brand-border-light pt-6">
+        <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-brand-border-light pt-6">
+          <p v-if="errors" class="mr-auto text-sm font-medium text-danger">{{ errors }}</p>
           <span v-if="saved" class="flex items-center gap-1.5 text-sm font-medium text-success"><Check class="h-4 w-4" /> Saved</span>
           <button class="btn-outline btn-md" @click="cancel">Cancel</button>
           <button class="btn-primary btn-md" @click="save">Save changes</button>

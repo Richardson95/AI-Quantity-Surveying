@@ -2,8 +2,11 @@
 import { ref, nextTick } from 'vue'
 import { Sparkles, Send, Paperclip, FileSpreadsheet, Calculator, Lightbulb, ShieldCheck, User } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
 
 const { toast } = useToast()
+const auth = useAuthStore()
+const firstName = auth.user.name.split(' ')[0]
 const input = ref('')
 const sending = ref(false)
 const messagesEl = ref(null)
@@ -11,7 +14,7 @@ const messagesEl = ref(null)
 const messages = ref([
   {
     role: 'ai',
-    text: "Hi Dammie 👋 I'm your AI Construction Assistant. I can help you generate BOQs, estimate quantities, compare market rates and suggest cost savings. What would you like to work on?",
+    text: `Hi ${firstName} 👋 I'm your AI Construction Assistant. I can help you generate BOQs, estimate quantities, compare market rates and suggest cost savings. What would you like to work on?`,
   },
 ])
 
@@ -53,8 +56,34 @@ function send(text) {
   }, 1100)
 }
 
+// Anything a user types reaches v-html, so escape first and only then allow
+// our own **bold** markup through.
+function escapeHtml(t) {
+  return String(t)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// Attaching opens a real picker and puts the file into the conversation.
+const attachInput = ref(null)
+function attachFile() {
+  attachInput.value?.click()
+}
+function onAttach(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  const size = file.size < 1024 * 1024
+    ? (file.size / 1024).toFixed(0) + ' KB'
+    : (file.size / 1024 / 1024).toFixed(1) + ' MB'
+  send(`Attached **${file.name}** (${size}) — please review it.`)
+}
+
 function render(t) {
-  return t.replace(/\*\*(.+?)\*\*/g, '<strong class="text-secondary">$1</strong>')
+  return escapeHtml(t).replace(/\*\*(.+?)\*\*/g, '<strong class="text-secondary">$1</strong>')
 }
 </script>
 
@@ -106,7 +135,8 @@ function render(t) {
 
     <!-- Input -->
     <div class="mt-4 flex items-end gap-2 rounded-2xl border border-brand-border bg-white p-2 shadow-card focus-within:border-primary">
-      <button class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-brand-light hover:bg-brand-border-light hover:text-primary" @click="toast('Attach a file (mock)', 'info')"><Paperclip class="h-5 w-5" /></button>
+      <input ref="attachInput" type="file" class="hidden" @change="onAttach" />
+      <button class="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-brand-light hover:bg-brand-border-light hover:text-primary" title="Attach a file" @click="attachFile"><Paperclip class="h-5 w-5" /></button>
       <textarea v-model="input" rows="1" @keydown.enter.exact.prevent="send()"
         class="flex-1 resize-none bg-transparent py-2.5 text-sm text-secondary placeholder:text-brand-light focus:outline-none"
         placeholder="Ask anything about quantities, costs or specifications…"></textarea>

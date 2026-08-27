@@ -1,11 +1,18 @@
 <script setup>
 import { ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
+
+// Return to whatever page bounced us here, when it was an in-app path.
+function destination() {
+  const r = route.query.redirect
+  return typeof r === 'string' && r.startsWith('/app') ? r : '/app/dashboard'
+}
 const email = ref('adetunjidammie2@gmail.com')
 const password = ref('demo1234')
 const show = ref(false)
@@ -15,13 +22,13 @@ function submit() {
   loading.value = true
   setTimeout(() => {
     auth.login(email.value)
-    router.push('/app/dashboard')
+    router.replace(destination())
   }, 600)
 }
 
 function googleLogin() {
   auth.login()
-  router.push('/app/dashboard')
+  router.replace(destination())
 }
 </script>
 

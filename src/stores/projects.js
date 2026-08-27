@@ -80,19 +80,22 @@ export const useProjectsStore = defineStore('projects', {
       },
     ],
     boqItems: [
-      { code: 'A1.1', desc: 'Site clearance and excavation to reduce levels', unit: 'm³', qty: 1240, rate: 3500, section: 'Substructure', confidence: 96 },
-      { code: 'A1.2', desc: 'Plain in-situ concrete (1:3:6) in blinding', unit: 'm³', qty: 86, rate: 52000, section: 'Substructure', confidence: 94 },
-      { code: 'A2.1', desc: 'Reinforced concrete (1:2:4) in foundation bases', unit: 'm³', qty: 142, rate: 78000, section: 'Substructure', confidence: 92 },
-      { code: 'A2.2', desc: 'High-yield steel reinforcement Y16 bars', unit: 'tonne', qty: 18.4, rate: 980000, section: 'Substructure', confidence: 89 },
-      { code: 'B1.1', desc: '225mm sandcrete block wall in cement mortar', unit: 'm²', qty: 1860, rate: 6800, section: 'Superstructure', confidence: 95 },
-      { code: 'B1.2', desc: 'Reinforced concrete columns (1:2:4)', unit: 'm³', qty: 64, rate: 82000, section: 'Superstructure', confidence: 91 },
-      { code: 'B2.1', desc: 'Reinforced concrete suspended slab 150mm', unit: 'm²', qty: 720, rate: 24500, section: 'Superstructure', confidence: 93 },
-      { code: 'C1.1', desc: 'Aluminium roofing sheet 0.55mm on timber', unit: 'm²', qty: 410, rate: 9200, section: 'Roofing', confidence: 88 },
-      { code: 'D1.1', desc: '12mm cement & sand plaster to walls', unit: 'm²', qty: 3720, rate: 2400, section: 'Finishes', confidence: 97 },
-      { code: 'D2.1', desc: 'Vitrified floor tiles 600x600mm', unit: 'm²', qty: 540, rate: 11500, section: 'Finishes', confidence: 90 },
-      { code: 'E1.1', desc: 'Flush doors with hardwood frame', unit: 'no', qty: 28, rate: 65000, section: 'Doors & Windows', confidence: 99 },
-      { code: 'E2.1', desc: 'Aluminium sliding windows with glazing', unit: 'm²', qty: 96, rate: 38000, section: 'Doors & Windows', confidence: 92 },
+      { id: 1, code: 'A1.1', desc: 'Site clearance and excavation to reduce levels', unit: 'm³', qty: 1240, rate: 3500, section: 'Substructure', confidence: 96 },
+      { id: 2, code: 'A1.2', desc: 'Plain in-situ concrete (1:3:6) in blinding', unit: 'm³', qty: 86, rate: 52000, section: 'Substructure', confidence: 94 },
+      { id: 3, code: 'A2.1', desc: 'Reinforced concrete (1:2:4) in foundation bases', unit: 'm³', qty: 142, rate: 78000, section: 'Substructure', confidence: 92 },
+      { id: 4, code: 'A2.2', desc: 'High-yield steel reinforcement Y16 bars', unit: 'tonne', qty: 18.4, rate: 980000, section: 'Substructure', confidence: 89 },
+      { id: 5, code: 'B1.1', desc: '225mm sandcrete block wall in cement mortar', unit: 'm²', qty: 1860, rate: 6800, section: 'Superstructure', confidence: 95 },
+      { id: 6, code: 'B1.2', desc: 'Reinforced concrete columns (1:2:4)', unit: 'm³', qty: 64, rate: 82000, section: 'Superstructure', confidence: 91 },
+      { id: 7, code: 'B2.1', desc: 'Reinforced concrete suspended slab 150mm', unit: 'm²', qty: 720, rate: 24500, section: 'Superstructure', confidence: 93 },
+      { id: 8, code: 'C1.1', desc: 'Aluminium roofing sheet 0.55mm on timber', unit: 'm²', qty: 410, rate: 9200, section: 'Roofing', confidence: 88 },
+      { id: 9, code: 'D1.1', desc: '12mm cement & sand plaster to walls', unit: 'm²', qty: 3720, rate: 2400, section: 'Finishes', confidence: 97 },
+      { id: 10, code: 'D2.1', desc: 'Vitrified floor tiles 600x600mm', unit: 'm²', qty: 540, rate: 11500, section: 'Finishes', confidence: 90 },
+      { id: 11, code: 'E1.1', desc: 'Flush doors with hardwood frame', unit: 'no', qty: 28, rate: 65000, section: 'Doors & Windows', confidence: 99 },
+      { id: 12, code: 'E2.1', desc: 'Aluminium sliding windows with glazing', unit: 'm²', qty: 96, rate: 38000, section: 'Doors & Windows', confidence: 92 },
     ],
+    // Which drawings the current BOQ was generated from, and when.
+    boqSources: [],
+    boqGeneratedAt: null,
     activity: [
       { id: 1, user: 'KO', action: 'updated quantities for', target: 'Substructure BOQ', time: '12 min ago', type: 'edit' },
       { id: 2, user: 'AI', action: 'generated BOQ from', target: 'Ground Floor Plan.pdf', time: '1 hour ago', type: 'ai' },
@@ -127,13 +130,40 @@ export const useProjectsStore = defineStore('projects', {
       this.projects.unshift(project)
       return project
     },
+    // Replace the whole BOQ with items derived from the uploaded drawings.
+    replaceBoqItems(items) {
+      this.boqItems = items.map((i, n) => ({ ...i, id: n + 1 }))
+      this.boqSources = items.length ? [...new Set(items.flatMap((i) => i.sources || []))] : []
+      this.boqGeneratedAt = items.length ? new Date().toISOString() : null
+    },
+
     addBoqItem(section = 'Substructure') {
-      const item = { code: 'NEW', desc: 'New item — edit description', unit: 'no', qty: 1, rate: 0, section, confidence: 100 }
+      const id = this.boqItems.reduce((max, i) => Math.max(max, i.id || 0), 0) + 1
+      // Codes are unique per section so the new row sorts and reads sensibly.
+      const prefix = (section.match(/[A-Z]/) || ['N'])[0]
+      const seq = this.boqItems.filter((i) => i.section === section).length + 1
+      const item = {
+        id,
+        code: `${prefix}${seq}.0`,
+        desc: 'New item — edit description',
+        unit: 'no',
+        qty: 1,
+        rate: 0,
+        section,
+        confidence: 100,
+      }
       this.boqItems.push(item)
       return item
     },
+    updateBoqItem(id, patch = {}) {
+      const item = this.boqItems.find((i) => i.id === id)
+      if (!item) return
+      if (patch.qty != null) patch.qty = Math.max(0, Number(patch.qty) || 0)
+      if (patch.rate != null) patch.rate = Math.max(0, Number(patch.rate) || 0)
+      Object.assign(item, patch)
+    },
     removeBoqItem(item) {
-      const i = this.boqItems.indexOf(item)
+      const i = this.boqItems.findIndex((x) => x.id === item.id)
       if (i !== -1) this.boqItems.splice(i, 1)
     },
   },

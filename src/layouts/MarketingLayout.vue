@@ -8,7 +8,39 @@ const open = ref(false)
 const nav = [
   { name: 'Features', to: '/features' },
   { name: 'Pricing', to: '/pricing' },
+  { name: 'Docs', to: '/docs' },
   { name: 'Contact', to: '/contact' },
+]
+
+// Every footer entry points at a real route — no more href="#".
+const footerCols = [
+  {
+    h: 'Product',
+    links: [
+      { name: 'BOQ Engine', to: '/features#ai-boq-engine' },
+      { name: 'Quantity Takeoff', to: '/features#smart-quantity-takeoff' },
+      { name: 'Cost Estimation', to: '/features#ai-cost-estimation' },
+      { name: 'AI Assistant', to: '/features#ai-construction-assistant' },
+    ],
+  },
+  {
+    h: 'Company',
+    links: [
+      { name: 'About', to: '/about' },
+      { name: 'Careers', to: '/careers' },
+      { name: 'Blog', to: '/blog' },
+      { name: 'Press', to: '/press' },
+    ],
+  },
+  {
+    h: 'Resources',
+    links: [
+      { name: 'Docs', to: '/docs' },
+      { name: 'API', to: '/api' },
+      { name: 'Support', to: '/support' },
+      { name: 'Status', to: '/status' },
+    ],
+  },
 ]
 </script>
 
@@ -78,15 +110,11 @@ const nav = [
             The AI operating system for construction cost intelligence. Generate BOQs, automate takeoff, and price projects in minutes.
           </p>
         </div>
-        <div v-for="col in [
-          { h: 'Product', links: ['BOQ Engine', 'Quantity Takeoff', 'Cost Estimation', 'AI Assistant'] },
-          { h: 'Company', links: ['About', 'Careers', 'Blog', 'Press'] },
-          { h: 'Resources', links: ['Docs', 'API', 'Support', 'Status'] },
-        ]" :key="col.h">
+        <div v-for="col in footerCols" :key="col.h">
           <h4 class="text-sm font-semibold text-white">{{ col.h }}</h4>
           <ul class="mt-4 space-y-2.5">
-            <li v-for="l in col.links" :key="l">
-              <a href="#" class="text-sm text-white/60 transition-colors hover:text-primary-light">{{ l }}</a>
+            <li v-for="l in col.links" :key="l.name">
+              <RouterLink :to="l.to" class="text-sm text-white/60 transition-colors hover:text-primary-light">{{ l.name }}</RouterLink>
             </li>
           </ul>
         </div>
@@ -94,10 +122,11 @@ const nav = [
       <div class="border-t border-white/10">
         <div class="section flex flex-col items-center justify-between gap-3 py-5 sm:flex-row">
           <p class="text-xs text-white/50">© 2026 BuildQ AI. All rights reserved.</p>
-          <div class="flex gap-5 text-xs text-white/50">
-            <a href="#" class="hover:text-white">Privacy</a>
-            <a href="#" class="hover:text-white">Terms</a>
-            <a href="#" class="hover:text-white">RICS · NIQS Compliant</a>
+          <div class="flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-white/50">
+            <RouterLink to="/privacy" class="hover:text-white">Privacy</RouterLink>
+            <RouterLink to="/terms" class="hover:text-white">Terms</RouterLink>
+            <RouterLink to="/status" class="hover:text-white">Status</RouterLink>
+            <span>RICS · NIQS Compliant</span>
           </div>
         </div>
       </div>

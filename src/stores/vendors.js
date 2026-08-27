@@ -11,6 +11,11 @@ import { defineStore } from 'pinia'
 
 const UNLOCK_KEY = 'buildq.vendors.unlocked'
 const SAVED_KEY = 'buildq.vendors.savedPrices'
+// Listings created by users of this app, kept separate from the seeded ones.
+const OWN_KEY = 'buildq.vendors.own'
+
+// One-off fee a business pays to publish a listing on the marketplace.
+export const LISTING_FEE = 1000
 
 function load(key, fallback) {
   try {
@@ -283,10 +288,14 @@ const vendors = [
   ] }),
 ]
 
+// User-created listings are stored whole so they survive a reload.
+const ownVendors = load(OWN_KEY, [])
+
 export const useVendorsStore = defineStore('vendors', {
   state: () => ({
     categories,
-    vendors,
+    // Own listings sort first so a vendor sees their own shop immediately.
+    vendors: [...ownVendors, ...vendors],
     unlockedIds: load(UNLOCK_KEY, []),
     savedPrices: load(SAVED_KEY, []),
   }),
@@ -299,6 +308,8 @@ export const useVendorsStore = defineStore('vendors', {
     vendorsByCategory: (s) => (slug) =>
       slug === 'all' ? s.vendors : s.vendors.filter((v) => v.category === slug),
     categoryMeta: (s) => (slug) => s.categories.find((c) => c.slug === slug),
+    ownListings: (s) => s.vendors.filter((v) => v.owned),
+    hasListing: (s) => s.vendors.some((v) => v.owned),
   },
   actions: {
     unlock(id) {
@@ -307,6 +318,122 @@ export const useVendorsStore = defineStore('vendors', {
         this._persist(UNLOCK_KEY, this.unlockedIds)
       }
     },
+    // ------------------------------------------------------------------
+    // Vendor self-registration
+    // ------------------------------------------------------------------
+    /**
+     * Validate a listing submitted by a user. Returns an array of problems,
+     * empty when the listing is good to save.
+     */
+    validateListing(data, { ignoreId = null } = {}) {
+      const errors = []
+      const name = String(data.name || '').trim()
+      const phone = String(data.phone || '').trim()
+      const email = String(data.email || '').trim()
+
+      if (name.length < 3) errors.push('Business name must be at least 3 characters.')
+      if (!this.categories.some((c) => c.slug === data.category)) errors.push('Choose a category.')
+      if (!String(data.location || '').trim()) errors.push('Add the town or city you trade from.')
+      if (!/^[+\d][\d\s-]{7,}$/.test(phone)) errors.push('Enter a valid phone number.')
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) errors.push('Enter a valid email address.')
+
+      const products = (data.products || []).filter((p) => String(p.name || '').trim())
+      if (!products.length) errors.push('Add at least one product with a price.')
+      if (products.some((p) => !(Number(p.price) > 0))) errors.push('Every product needs a price above zero.')
+      if (products.some((p) => !String(p.unit || '').trim())) errors.push('Every product needs a unit.')
+
+      const clash = this.vendors.some(
+        (v) => v.id !== ignoreId && v.name.trim().toLowerCase() === name.toLowerCase()
+      )
+      if (clash) errors.push('A vendor with that business name is already listed.')
+
+      return errors
+    },
+
+    registerVendor(data, { feePaid = false } = {}) {
+      const errors = this.validateListing(data)
+      if (errors.length) return { ok: false, errors }
+      // Publishing is a paid action; refuse rather than quietly listing free.
+      if (!feePaid) return { ok: false, errors: ['The ₦1,000 listing fee has not been paid.'] }
+
+      const id = 'VND-U' + String(this.vendors.filter((v) => v.owned).length + 1).padStart(3, '0') + '-' + Date.now().toString(36).slice(-4).toUpperCase()
+
+      const listing = {
+        id,
+        name: String(data.name).trim(),
+        category: data.category,
+        location: String(data.location).trim(),
+        phone: String(data.phone).trim(),
+        email: String(data.email).trim(),
+        whatsapp: String(data.whatsapp || data.phone).trim(),
+        years: Math.max(0, Number(data.years) || 0),
+        unlockPrice: Math.max(0, Number(data.unlockPrice) || 1000),
+        description: String(data.description || '').trim(),
+        products: (data.products || [])
+          .filter((p) => String(p.name || '').trim())
+          .map((p) => ({ name: String(p.name).trim(), unit: String(p.unit).trim(), price: Number(p.price) })),
+        // New listings start unrated and unverified — nothing is faked.
+        rating: 0,
+        reviews: 0,
+        verified: false,
+        owned: true,
+        status: 'Pending review',
+        createdAt: new Date().toISOString(),
+        listingFee: LISTING_FEE,
+        feePaidAt: new Date().toISOString(),
+        receiptId: 'RCP-' + Date.now().toString(36).toUpperCase(),
+      }
+
+      this.vendors.unshift(listing)
+      // Your own shop's contacts are never paywalled to you.
+      if (!this.unlockedIds.includes(id)) {
+        this.unlockedIds.push(id)
+        this._persist(UNLOCK_KEY, this.unlockedIds)
+      }
+      this._persistOwn()
+      return { ok: true, vendor: listing }
+    },
+
+    updateListing(id, data) {
+      const listing = this.vendors.find((v) => v.id === id && v.owned)
+      if (!listing) return { ok: false, errors: ['That listing no longer exists.'] }
+
+      const errors = this.validateListing(data, { ignoreId: id })
+      if (errors.length) return { ok: false, errors }
+
+      Object.assign(listing, {
+        name: String(data.name).trim(),
+        category: data.category,
+        location: String(data.location).trim(),
+        phone: String(data.phone).trim(),
+        email: String(data.email).trim(),
+        whatsapp: String(data.whatsapp || data.phone).trim(),
+        years: Math.max(0, Number(data.years) || 0),
+        unlockPrice: Math.max(0, Number(data.unlockPrice) || 1000),
+        description: String(data.description || '').trim(),
+        products: (data.products || [])
+          .filter((p) => String(p.name || '').trim())
+          .map((p) => ({ name: String(p.name).trim(), unit: String(p.unit).trim(), price: Number(p.price) })),
+      })
+      this._persistOwn()
+      return { ok: true, vendor: listing }
+    },
+
+    removeListing(id) {
+      const listing = this.vendors.find((v) => v.id === id && v.owned)
+      if (!listing) return false
+      this.vendors = this.vendors.filter((v) => v.id !== id)
+      // Drop any saved prices that pointed at this vendor.
+      this.savedPrices = this.savedPrices.filter((p) => !p.id.startsWith(id + ':'))
+      this._persist(SAVED_KEY, this.savedPrices)
+      this._persistOwn()
+      return true
+    },
+
+    _persistOwn() {
+      this._persist(OWN_KEY, this.vendors.filter((v) => v.owned))
+    },
+
     savePrice(vendor, product) {
       const entry = {
         id: vendor.id + ':' + product.name,

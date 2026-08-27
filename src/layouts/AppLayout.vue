@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
   LayoutDashboard, FolderKanban, FileSpreadsheet, Calculator, Ruler,
@@ -8,10 +8,12 @@ import {
 } from 'lucide-vue-next'
 import BrandLogo from '@/components/BrandLogo.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useProjectsStore } from '@/stores/projects'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const projects = useProjectsStore()
 const sidebarOpen = ref(false)
 const userMenu = ref(false)
 const notifMenu = ref(false)
@@ -23,10 +25,76 @@ const notifications = [
   { id: 3, title: 'Price alert', detail: 'Cement rate up 4.2% in Lagos', time: 'Yesterday' },
 ]
 
+const notifWrap = ref(null)
+const userWrap = ref(null)
+
 function toggleNotif() {
   notifMenu.value = !notifMenu.value
   if (notifMenu.value) hasUnread.value = false
+  if (notifMenu.value) userMenu.value = false
 }
+function toggleUser() {
+  userMenu.value = !userMenu.value
+  if (userMenu.value) notifMenu.value = false
+}
+function closeMenus() {
+  notifMenu.value = false
+  userMenu.value = false
+  searchOpen.value = false
+}
+// Dropdowns must dismiss when you click away or press Escape, not just on re-click.
+function onDocClick(e) {
+  if (notifMenu.value && notifWrap.value && !notifWrap.value.contains(e.target)) notifMenu.value = false
+  if (userMenu.value && userWrap.value && !userWrap.value.contains(e.target)) userMenu.value = false
+  if (searchOpen.value && searchWrap.value && !searchWrap.value.contains(e.target)) searchOpen.value = false
+}
+function onKeydown(e) {
+  if (e.key === 'Escape') closeMenus()
+}
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onKeydown)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onKeydown)
+})
+
+// --- global search -------------------------------------------------------
+// Searches projects and BOQ items and jumps straight to the match.
+const searchQuery = ref('')
+const searchOpen = ref(false)
+const searchWrap = ref(null)
+
+const searchResults = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return []
+  const hits = []
+  for (const p of projects.projects) {
+    if (p.name.toLowerCase().includes(q) || p.client.toLowerCase().includes(q) || p.id.toLowerCase().includes(q)) {
+      hits.push({ key: 'p:' + p.id, label: p.name, detail: p.client, kind: 'Project', to: `/app/projects/${p.id}` })
+    }
+  }
+  for (const i of projects.boqItems) {
+    if (i.desc.toLowerCase().includes(q) || i.code.toLowerCase().includes(q)) {
+      hits.push({ key: 'b:' + i.code + i.desc, label: i.desc, detail: `${i.code} · ${i.section}`, kind: 'BOQ item', to: '/app/boq' })
+    }
+  }
+  return hits.slice(0, 8)
+})
+
+function goToResult(r) {
+  searchQuery.value = ''
+  searchOpen.value = false
+  sidebarOpen.value = false
+  router.push(r.to)
+}
+
+// Close every transient panel whenever the route changes.
+watch(() => route.fullPath, () => {
+  closeMenus()
+  sidebarOpen.value = false
+})
 
 const sections = [
   {
@@ -69,13 +137,15 @@ const sections = [
   },
 ]
 
+const navItems = sections.flatMap((s) => s.items)
+
 const pageTitle = computed(() => {
-  for (const s of sections) {
-    const found = s.items.find((i) => route.path.startsWith(i.to))
-    if (found) return found.name
-  }
   if (route.name === 'project-detail') return 'Project Details'
-  return 'Dashboard'
+  // Longest matching prefix, so nested routes don't get the parent's title.
+  const found = navItems
+    .filter((i) => route.path === i.to || route.path.startsWith(i.to + '/'))
+    .sort((a, b) => b.to.length - a.to.length)[0]
+  return found ? found.name : 'Dashboard'
 })
 
 function logout() {
@@ -115,7 +185,7 @@ function logout() {
                 :key="item.name"
                 :to="item.to"
                 class="sidebar-link"
-                :class="{ 'sidebar-link-active': route.path.startsWith(item.to) }"
+                :class="{ 'sidebar-link-active': route.path === item.to || route.path.startsWith(item.to + '/') }"
                 @click="sidebarOpen = false"
               >
                 <component :is="item.icon" class="h-[18px] w-[18px]" />
@@ -151,12 +221,33 @@ function logout() {
         <h1 class="min-w-0 flex-1 truncate font-display text-lg font-bold text-secondary sm:flex-none sm:text-xl">{{ pageTitle }}</h1>
 
         <div class="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
-        <div class="relative hidden md:block">
+        <div ref="searchWrap" class="relative hidden md:block">
           <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-light" />
-          <input class="input w-56 pl-9 lg:w-64" placeholder="Search projects, BOQs…" />
+          <input
+            v-model="searchQuery"
+            class="input w-56 pl-9 lg:w-64"
+            placeholder="Search projects, BOQs…"
+            @focus="searchOpen = true"
+            @keydown.enter="searchResults.length && goToResult(searchResults[0])"
+          />
+          <div v-if="searchOpen && searchQuery.trim()" class="absolute right-0 mt-2 w-80 overflow-hidden rounded-2xl border border-brand-border-light bg-white shadow-card-hover">
+            <button
+              v-for="r in searchResults"
+              :key="r.key"
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-brand-bg"
+              @click="goToResult(r)"
+            >
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-sm font-semibold text-secondary">{{ r.label }}</p>
+                <p class="truncate text-xs text-brand-muted">{{ r.detail }}</p>
+              </div>
+              <span class="badge shrink-0 bg-brand-border-light text-brand-muted">{{ r.kind }}</span>
+            </button>
+            <p v-if="!searchResults.length" class="px-4 py-3 text-sm text-brand-muted">No matches for “{{ searchQuery }}”.</p>
+          </div>
         </div>
 
-        <div class="relative">
+        <div ref="notifWrap" class="relative">
           <button class="relative grid h-10 w-10 place-items-center rounded-xl text-brand-muted transition-colors hover:bg-brand-border-light" @click="toggleNotif">
             <Bell class="h-5 w-5" />
             <span v-if="hasUnread" class="absolute right-2 top-2 h-2 w-2 rounded-full bg-danger ring-2 ring-white"></span>
@@ -178,9 +269,10 @@ function logout() {
           </transition>
         </div>
 
-        <div class="relative">
-          <button class="flex items-center gap-2 rounded-xl py-1.5 pl-1.5 pr-2 transition-colors hover:bg-brand-border-light" @click="userMenu = !userMenu">
-            <div class="grid h-8 w-8 place-items-center rounded-lg bg-brand-gradient text-xs font-bold text-white">{{ auth.user.avatar }}</div>
+        <div ref="userWrap" class="relative">
+          <button class="flex items-center gap-2 rounded-xl py-1.5 pl-1.5 pr-2 transition-colors hover:bg-brand-border-light" @click="toggleUser">
+            <img v-if="auth.user.photo" :src="auth.user.photo" alt="" class="h-8 w-8 rounded-lg object-cover" />
+            <div v-else class="grid h-8 w-8 place-items-center rounded-lg bg-brand-gradient text-xs font-bold text-white">{{ auth.user.avatar }}</div>
             <div class="hidden text-left sm:block">
               <p class="text-sm font-semibold leading-tight text-secondary">{{ auth.user.name }}</p>
               <p class="text-[11px] leading-tight text-brand-muted">{{ auth.user.role }}</p>
@@ -208,11 +300,7 @@ function logout() {
 
       <!-- Page content -->
       <main class="flex-1 overflow-x-clip p-4 sm:p-6 lg:p-8">
-        <RouterView v-slot="{ Component }">
-          <transition name="page" mode="out-in">
-            <component :is="Component" />
-          </transition>
-        </RouterView>
+        <RouterView />
       </main>
     </div>
   </div>

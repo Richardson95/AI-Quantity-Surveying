@@ -2,19 +2,24 @@
 import { computed } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import {
-  ArrowLeft, MapPin, Building2, Calendar, Wallet, FileSpreadsheet,
-  GitCompareArrows, FileText, Download, Users,
+  ArrowLeft, MapPin, Building2, Calendar, FileSpreadsheet,
+  GitCompareArrows, FileText, Download, Users, FolderSearch,
 } from 'lucide-vue-next'
 import AreaChart from '@/components/charts/AreaChart.vue'
 import { useProjectsStore } from '@/stores/projects'
+import { useDocumentsStore } from '@/stores/documents'
 import { useToast } from '@/composables/useToast'
 import { downloadMock } from '@/utils/download'
-import { formatFull, formatMoney } from '@/utils/format'
+import { formatMoney } from '@/utils/format'
+import FileDropzone from '@/components/FileDropzone.vue'
+import DocumentList from '@/components/DocumentList.vue'
 
 const route = useRoute()
 const store = useProjectsStore()
+const documents = useDocumentsStore()
 const { toast } = useToast()
-const project = computed(() => store.projects.find((p) => p.id === route.params.id) || store.projects[0])
+// A bad id must say so — silently showing a different project is worse than a 404.
+const project = computed(() => store.projects.find((p) => p.id === route.params.id) || null)
 
 function exportProject() {
   downloadMock(`${project.value.name} — Summary.txt`)
@@ -44,7 +49,16 @@ const docs = [
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div v-if="!project" class="card grid place-items-center px-6 py-20 text-center">
+    <div class="grid h-14 w-14 place-items-center rounded-2xl bg-brand-bg text-brand-light"><FolderSearch class="h-6 w-6" /></div>
+    <p class="mt-4 font-semibold text-secondary">Project not found</p>
+    <p class="mt-1 max-w-sm text-sm text-brand-muted">
+      No project matches <span class="font-mono text-secondary">{{ route.params.id }}</span>. It may have been removed.
+    </p>
+    <RouterLink to="/app/projects" class="btn-primary btn-md mt-6"><ArrowLeft class="h-4 w-4" /> Back to projects</RouterLink>
+  </div>
+
+  <div v-else class="space-y-6">
     <RouterLink to="/app/projects" class="inline-flex items-center gap-1.5 text-sm font-medium text-brand-muted hover:text-secondary">
       <ArrowLeft class="h-4 w-4" /> Back to projects
     </RouterLink>
@@ -133,7 +147,31 @@ const docs = [
 
     <!-- Documents -->
     <div class="card p-6">
-      <h3 class="mb-4 font-display text-lg font-bold text-secondary">Documents</h3>
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 class="font-display text-lg font-bold text-secondary">Documents</h3>
+          <p class="text-sm text-brand-muted">Drawings, plans, BOQs and specifications for this project</p>
+        </div>
+        <span v-if="documents.totalFor(project.id)" class="badge bg-primary/10 text-primary-dark">
+          {{ documents.totalFor(project.id) }} uploaded
+        </span>
+      </div>
+
+      <FileDropzone :scope="project.id" label="Drop project documents here" />
+
+      <!-- Uploaded files sit directly beneath the dropzone. -->
+      <div class="mt-4">
+        <p class="mb-2 text-xs font-semibold uppercase tracking-wider text-brand-light">
+          Uploaded documents
+          <span v-if="documents.totalFor(project.id)" class="text-brand-muted">· {{ documents.totalFor(project.id) }}</span>
+        </p>
+        <DocumentList
+          :scope="project.id"
+          empty-text="Nothing uploaded yet — drop drawings, BOQs or specifications above."
+        />
+      </div>
+
+      <p class="mb-2 mt-8 text-xs font-semibold uppercase tracking-wider text-brand-light">Sample project files</p>
       <div class="grid gap-3 sm:grid-cols-2">
         <div v-for="d in docs" :key="d.name" class="flex items-center gap-3 rounded-xl border border-brand-border-light p-3 transition-colors hover:border-primary/30 hover:bg-brand-bg">
           <div class="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-xs font-bold text-primary-dark">{{ d.type }}</div>

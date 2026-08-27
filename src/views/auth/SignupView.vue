@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { User, Mail, Lock, Building2, ArrowRight, Check } from 'lucide-vue-next'
+import { User, Mail, Lock, Building2, ArrowRight } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
@@ -25,8 +25,12 @@ function submit() {
   loading.value = true
   setTimeout(() => {
     auth.login(form.value.email)
-    if (form.value.name) auth.user.name = form.value.name
-    router.push('/app/dashboard')
+    // Carry the whole form over — name drives the avatar initials too.
+    auth.updateProfile({
+      ...(form.value.name ? { name: form.value.name } : {}),
+      ...(form.value.company ? { company: form.value.company } : {}),
+    })
+    router.replace('/app/dashboard')
   }, 700)
 }
 </script>
@@ -82,7 +86,9 @@ function submit() {
     </form>
 
     <p class="mt-4 text-center text-xs text-brand-light">
-      By signing up you agree to our <a href="#" class="text-primary hover:underline">Terms</a> and <a href="#" class="text-primary hover:underline">Privacy Policy</a>.
+      By signing up you agree to our
+      <RouterLink to="/terms" class="text-primary hover:underline">Terms</RouterLink> and
+      <RouterLink to="/privacy" class="text-primary hover:underline">Privacy Policy</RouterLink>.
     </p>
 
     <p class="mt-6 text-center text-sm text-brand-muted">

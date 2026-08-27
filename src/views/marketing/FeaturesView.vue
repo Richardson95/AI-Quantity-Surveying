@@ -5,6 +5,9 @@ import {
   ScanText, Users, ShieldCheck, ArrowRight, Check,
 } from 'lucide-vue-next'
 
+// Slugs let the footer link straight to a specific module.
+const slug = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
 const groups = [
   {
     icon: FileSpreadsheet, title: 'AI BOQ Engine',
@@ -68,7 +71,7 @@ const groups = [
 
   <section class="bg-brand-bg py-20">
     <div class="section grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-      <div v-for="g in groups" :key="g.title" class="card p-6">
+      <div v-for="g in groups" :key="g.title" :id="slug(g.title)" class="card scroll-mt-24 p-6">
         <div class="grid h-12 w-12 place-items-center rounded-xl bg-primary/10 text-primary">
           <component :is="g.icon" class="h-6 w-6" />
         </div>

@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const routes = [
   // ---------- Marketing ----------
@@ -10,6 +11,18 @@ const routes = [
       { path: 'features', name: 'features', component: () => import('@/views/marketing/FeaturesView.vue') },
       { path: 'pricing', name: 'pricing', component: () => import('@/views/marketing/PricingView.vue') },
       { path: 'contact', name: 'contact', component: () => import('@/views/marketing/ContactView.vue') },
+
+      // Company, resource and legal pages — every footer link resolves here.
+      ...[
+        'about', 'careers', 'blog', 'press',
+        'docs', 'api', 'support', 'status',
+        'privacy', 'terms',
+      ].map((slug) => ({
+        path: slug,
+        name: slug,
+        meta: { page: slug },
+        component: () => import('@/views/marketing/InfoView.vue'),
+      })),
     ],
   },
 
@@ -17,6 +30,7 @@ const routes = [
   {
     path: '/auth',
     component: () => import('@/layouts/AuthLayout.vue'),
+    meta: { guestOnly: true },
     children: [
       { path: 'login', name: 'login', component: () => import('@/views/auth/LoginView.vue') },
       { path: 'signup', name: 'signup', component: () => import('@/views/auth/SignupView.vue') },
@@ -28,6 +42,7 @@ const routes = [
   {
     path: '/app',
     component: () => import('@/layouts/AppLayout.vue'),
+    meta: { requiresAuth: true },
     children: [
       { path: '', redirect: { name: 'dashboard' } },
       { path: 'dashboard', name: 'dashboard', component: () => import('@/views/app/DashboardView.vue') },
@@ -58,6 +73,19 @@ const router = createRouter({
     if (to.hash) return { el: to.hash, behavior: 'smooth' }
     return { top: 0 }
   },
+})
+
+// Keep signed-out users out of the workspace, and signed-in users out of the
+// auth screens. `redirect` lets us return to the page that was asked for.
+router.beforeEach((to) => {
+  const auth = useAuthStore()
+  if (to.matched.some((r) => r.meta.requiresAuth) && !auth.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.matched.some((r) => r.meta.guestOnly) && auth.isAuthenticated) {
+    return { name: 'dashboard' }
+  }
+  return true
 })
 
 export default router

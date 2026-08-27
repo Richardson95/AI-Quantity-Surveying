@@ -1,5 +1,6 @@
 <script setup>
-import { Check, Sparkles, CreditCard, Download, Zap } from 'lucide-vue-next'
+import { ref, computed } from 'vue'
+import { Check, Sparkles, CreditCard, Download, Zap, X, ArrowRight } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { downloadMock } from '@/utils/download'
@@ -7,20 +8,82 @@ import { downloadMock } from '@/utils/download'
 const auth = useAuthStore()
 const { toast } = useToast()
 
-function manage() { toast('Opening subscription management…', 'info') }
-function upgrade() { toast('Upgrade — redirecting to checkout (mock)', 'info') }
-function updateCard() { toast('Card update form (mock)', 'info') }
+// Plans mirror the public pricing page so the two never disagree.
+const plans = [
+  { name: 'Starter', price: 18000, blurb: 'Freelance surveyors', seats: 2, credits: 500, storage: 10 },
+  { name: 'Professional', price: 54000, blurb: 'Construction companies', seats: 10, credits: 2000, storage: 100 },
+  { name: 'Enterprise', price: null, blurb: 'Large firms & government', seats: 'Unlimited', credits: 'Unlimited', storage: 1000 },
+]
+
+const currentPlan = computed(() => plans.find((p) => p.name === auth.user.plan) || plans[1])
+
+const planOpen = ref(false)
+const cardOpen = ref(false)
+
+const card = ref({ number: '', name: auth.user.name, expiry: '', cvc: '' })
+const cardOnFile = ref({ last4: '4242', expiry: '08/28' })
+const cardError = ref('')
+
+function manage() {
+  planOpen.value = true
+}
+function upgrade() {
+  planOpen.value = true
+}
+
+function choosePlan(plan) {
+  if (plan.name === auth.user.plan) {
+    toast(`You are already on ${plan.name}`, 'info')
+    return
+  }
+  if (plan.price === null) {
+    planOpen.value = false
+    toast('Our sales team will contact you about Enterprise', 'info')
+    return
+  }
+  const previous = auth.user.plan
+  auth.updateProfile({ plan: plan.name })
+  planOpen.value = false
+  const direction = plans.indexOf(plan) > plans.findIndex((p) => p.name === previous) ? 'Upgraded' : 'Switched'
+  toast(`${direction} to ${plan.name} — ₦${plan.price.toLocaleString()}/month`)
+}
+
+function updateCard() {
+  card.value = { number: '', name: auth.user.name, expiry: '', cvc: '' }
+  cardError.value = ''
+  cardOpen.value = true
+}
+
+function saveCard() {
+  const digits = card.value.number.replace(/\D/g, '')
+  if (digits.length < 13 || digits.length > 19) {
+    cardError.value = 'Enter a valid card number.'
+    return
+  }
+  if (!/^(0[1-9]|1[0-2])\/\d{2}$/.test(card.value.expiry)) {
+    cardError.value = 'Expiry must be in MM/YY format.'
+    return
+  }
+  if (!/^\d{3,4}$/.test(card.value.cvc)) {
+    cardError.value = 'CVC must be 3 or 4 digits.'
+    return
+  }
+  cardOnFile.value = { last4: digits.slice(-4), expiry: card.value.expiry }
+  cardOpen.value = false
+  toast('Payment method updated')
+}
 function downloadInvoice(inv) {
   downloadMock(`${inv.id}.txt`, `Invoice ${inv.id}\nDate: ${inv.date}\nAmount: ₦${inv.amount.toLocaleString()}\nStatus: ${inv.status}\n`)
   toast(`Downloading ${inv.id}`)
 }
 
-const usage = [
-  { label: 'AI Credits', used: 1240, total: 2000, unit: '' },
+// Allowances follow the plan you are actually on.
+const usage = computed(() => [
+  { label: 'AI Credits', used: 1240, total: currentPlan.value.credits, unit: '' },
   { label: 'Active Projects', used: 12, total: 'Unlimited', unit: '' },
-  { label: 'Storage', used: 34, total: 100, unit: ' GB' },
-  { label: 'Team Seats', used: 5, total: 10, unit: '' },
-]
+  { label: 'Storage', used: 34, total: currentPlan.value.storage, unit: ' GB' },
+  { label: 'Team Seats', used: 5, total: currentPlan.value.seats, unit: '' },
+])
 
 const invoices = [
   { id: 'INV-2026-006', date: 'Jun 1, 2026', amount: 54000, status: 'Paid' },
@@ -35,80 +98,143 @@ function pct(u, t) {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <div>
-      <h2 class="font-display text-2xl font-bold text-secondary">Billing & Subscription</h2>
-      <p class="mt-1 text-brand-muted">Manage your plan, usage and invoices</p>
-    </div>
-
-    <!-- Current plan -->
-    <div class="relative overflow-hidden rounded-2xl bg-navy-gradient p-6 sm:p-8">
-      <div class="absolute inset-0 bg-hero-glow"></div>
-      <div class="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <span class="badge bg-white/10 text-primary-light"><Sparkles class="h-3 w-3" /> Current plan</span>
-          <h3 class="mt-3 font-display text-3xl font-extrabold text-white">{{ auth.user.plan }}</h3>
-          <p class="mt-1 text-white/60">₦54,000 / month · renews Jul 1, 2026</p>
-        </div>
-        <div class="flex gap-2">
-          <button class="btn border border-white/20 text-white hover:bg-white/10 btn-md" @click="manage">Manage</button>
-          <button class="btn-primary btn-md" @click="upgrade"><Zap class="h-4 w-4" /> Upgrade</button>
-        </div>
+  <div>
+    <div class="space-y-6">
+      <div>
+        <h2 class="font-display text-2xl font-bold text-secondary">Billing & Subscription</h2>
+        <p class="mt-1 text-brand-muted">Manage your plan, usage and invoices</p>
       </div>
-    </div>
 
-    <!-- Usage -->
-    <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-      <div v-for="u in usage" :key="u.label" class="card p-5">
-        <p class="text-sm text-brand-muted">{{ u.label }}</p>
-        <p class="mt-1 font-display text-xl font-bold text-secondary">
-          {{ u.used.toLocaleString() }}<span class="text-sm font-medium text-brand-light"> / {{ u.total }}{{ u.unit }}</span>
-        </p>
-        <div v-if="typeof u.total === 'number'" class="mt-3 h-1.5 overflow-hidden rounded-full bg-brand-border">
-          <div class="h-full rounded-full bg-brand-gradient" :style="{ width: pct(u.used, u.total) + '%' }"></div>
-        </div>
-        <p v-else class="mt-3 text-xs font-medium text-success">Unlimited on your plan</p>
-      </div>
-    </div>
-
-    <div class="grid gap-6 lg:grid-cols-3">
-      <!-- Payment method -->
-      <div class="card p-6">
-        <h3 class="font-display font-bold text-secondary">Payment Method</h3>
-        <div class="mt-4 rounded-xl border border-brand-border-light p-4">
-          <div class="flex items-center gap-3">
-            <div class="grid h-10 w-14 place-items-center rounded-lg bg-secondary text-white"><CreditCard class="h-5 w-5" /></div>
-            <div>
-              <p class="font-semibold text-secondary">•••• •••• •••• 4242</p>
-              <p class="text-xs text-brand-light">Expires 08/28</p>
-            </div>
+      <!-- Current plan -->
+      <div class="relative overflow-hidden rounded-2xl bg-navy-gradient p-6 sm:p-8">
+        <div class="absolute inset-0 bg-hero-glow"></div>
+        <div class="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <span class="badge bg-white/10 text-primary-light"><Sparkles class="h-3 w-3" /> Current plan</span>
+            <h3 class="mt-3 font-display text-3xl font-extrabold text-white">{{ auth.user.plan }}</h3>
+            <p class="mt-1 text-white/60">
+              <template v-if="currentPlan.price">₦{{ currentPlan.price.toLocaleString() }} / month · renews Jul 1, 2026</template>
+              <template v-else>Custom pricing · managed by your success manager</template>
+            </p>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn border border-white/20 text-white hover:bg-white/10 btn-md" @click="manage">Manage</button>
+            <button class="btn-primary btn-md" @click="upgrade"><Zap class="h-4 w-4" /> Upgrade</button>
           </div>
         </div>
-        <button class="btn-outline btn-md mt-4 w-full" @click="updateCard">Update card</button>
       </div>
 
-      <!-- Invoices -->
-      <div class="card overflow-hidden lg:col-span-2">
-        <div class="border-b border-brand-border-light p-5">
-          <h3 class="font-display font-bold text-secondary">Invoices</h3>
+      <!-- Usage -->
+      <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <div v-for="u in usage" :key="u.label" class="card p-5">
+          <p class="text-sm text-brand-muted">{{ u.label }}</p>
+          <p class="mt-1 font-display text-xl font-bold text-secondary">
+            {{ u.used.toLocaleString() }}<span class="text-sm font-medium text-brand-light"> / {{ u.total }}{{ u.unit }}</span>
+          </p>
+          <div v-if="typeof u.total === 'number'" class="mt-3 h-1.5 overflow-hidden rounded-full bg-brand-border">
+            <div class="h-full rounded-full bg-brand-gradient" :style="{ width: pct(u.used, u.total) + '%' }"></div>
+          </div>
+          <p v-else class="mt-3 text-xs font-medium text-success">Unlimited on your plan</p>
         </div>
-        <div class="divide-y divide-brand-border-light">
-          <div v-for="inv in invoices" :key="inv.id" class="flex flex-col gap-3 px-5 py-3.5 hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
-            <div class="flex min-w-0 flex-1 items-center gap-4">
-              <div class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-dark text-xs font-bold">PDF</div>
-              <div class="min-w-0">
-                <p class="truncate font-mono text-sm font-semibold text-secondary">{{ inv.id }}</p>
-                <p class="text-xs text-brand-light">{{ inv.date }}</p>
+      </div>
+
+      <div class="grid gap-6 lg:grid-cols-3">
+        <!-- Payment method -->
+        <div class="card p-6">
+          <h3 class="font-display font-bold text-secondary">Payment Method</h3>
+          <div class="mt-4 rounded-xl border border-brand-border-light p-4">
+            <div class="flex items-center gap-3">
+              <div class="grid h-10 w-14 place-items-center rounded-lg bg-secondary text-white"><CreditCard class="h-5 w-5" /></div>
+              <div>
+                <p class="font-semibold text-secondary">•••• •••• •••• {{ cardOnFile.last4 }}</p>
+                <p class="text-xs text-brand-light">Expires {{ cardOnFile.expiry }}</p>
               </div>
             </div>
-            <div class="flex items-center gap-3 pl-[52px] sm:pl-0">
-              <span class="font-semibold text-secondary">₦{{ inv.amount.toLocaleString() }}</span>
-              <span class="badge whitespace-nowrap bg-success/10 text-success"><Check class="h-3 w-3" /> {{ inv.status }}</span>
-              <button class="ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary sm:ml-0" @click="downloadInvoice(inv)"><Download class="h-4 w-4" /></button>
+          </div>
+          <button class="btn-outline btn-md mt-4 w-full" @click="updateCard">Update card</button>
+        </div>
+
+        <!-- Invoices -->
+        <div class="card overflow-hidden lg:col-span-2">
+          <div class="border-b border-brand-border-light p-5">
+            <h3 class="font-display font-bold text-secondary">Invoices</h3>
+          </div>
+          <div class="divide-y divide-brand-border-light">
+            <div v-for="inv in invoices" :key="inv.id" class="flex flex-col gap-3 px-5 py-3.5 hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
+              <div class="flex min-w-0 flex-1 items-center gap-4">
+                <div class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-dark text-xs font-bold">PDF</div>
+                <div class="min-w-0">
+                  <p class="truncate font-mono text-sm font-semibold text-secondary">{{ inv.id }}</p>
+                  <p class="text-xs text-brand-light">{{ inv.date }}</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-3 pl-[52px] sm:pl-0">
+                <span class="font-semibold text-secondary">₦{{ inv.amount.toLocaleString() }}</span>
+                <span class="badge whitespace-nowrap bg-success/10 text-success"><Check class="h-3 w-3" /> {{ inv.status }}</span>
+                <button class="ml-auto grid h-9 w-9 shrink-0 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary sm:ml-0" @click="downloadInvoice(inv)"><Download class="h-4 w-4" /></button>
+              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
+
+    <!-- Change plan -->
+    <transition name="page">
+      <div v-if="planOpen" class="fixed inset-0 z-[60] flex items-end justify-center bg-secondary/50 p-0 backdrop-blur-sm sm:items-center sm:p-4" @click.self="planOpen = false">
+        <div class="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl bg-white shadow-card-hover sm:rounded-2xl">
+          <div class="flex items-center justify-between border-b border-brand-border-light px-6 py-4">
+            <h3 class="font-display text-lg font-bold text-secondary">Change your plan</h3>
+            <button class="btn btn-ghost btn-sm" @click="planOpen = false"><X class="h-5 w-5" /></button>
+          </div>
+          <div class="grid flex-1 gap-4 overflow-y-auto p-6 sm:grid-cols-3">
+            <div v-for="p in plans" :key="p.name" class="card flex flex-col p-5"
+              :class="p.name === auth.user.plan ? 'ring-2 ring-primary' : ''">
+              <h4 class="font-display font-bold text-secondary">{{ p.name }}</h4>
+              <p class="text-xs text-brand-muted">{{ p.blurb }}</p>
+              <p class="mt-3 font-display text-2xl font-extrabold text-secondary">
+                {{ p.price === null ? 'Custom' : '₦' + p.price.toLocaleString() }}
+                <span v-if="p.price !== null" class="text-sm font-medium text-brand-light">/mo</span>
+              </p>
+              <ul class="mt-4 flex-1 space-y-2 text-sm text-brand-muted">
+                <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.credits }} AI credits</li>
+                <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.seats }} team seats</li>
+                <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.storage }} GB storage</li>
+              </ul>
+              <button class="btn-md mt-5" :class="p.name === auth.user.plan ? 'btn-outline' : 'btn-primary'" @click="choosePlan(p)">
+                {{ p.name === auth.user.plan ? 'Current plan' : p.price === null ? 'Contact sales' : 'Switch' }}
+                <ArrowRight v-if="p.name !== auth.user.plan" class="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- Update card -->
+    <transition name="page">
+      <div v-if="cardOpen" class="fixed inset-0 z-[60] flex items-center justify-center bg-secondary/50 p-4 backdrop-blur-sm" @click.self="cardOpen = false">
+        <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-card-hover">
+          <div class="flex items-center justify-between border-b border-brand-border-light px-6 py-4">
+            <h3 class="font-display text-lg font-bold text-secondary">Update payment method</h3>
+            <button class="btn btn-ghost btn-sm" @click="cardOpen = false"><X class="h-5 w-5" /></button>
+          </div>
+          <form class="space-y-4 p-6" @submit.prevent="saveCard">
+            <div><label class="label">Card number</label><input v-model="card.number" class="input" placeholder="4242 4242 4242 4242" inputmode="numeric" /></div>
+            <div><label class="label">Name on card</label><input v-model="card.name" class="input" /></div>
+            <div class="grid grid-cols-2 gap-4">
+              <div><label class="label">Expiry</label><input v-model="card.expiry" class="input" placeholder="MM/YY" /></div>
+              <div><label class="label">CVC</label><input v-model="card.cvc" class="input" placeholder="123" inputmode="numeric" /></div>
+            </div>
+            <p v-if="cardError" class="text-sm font-medium text-danger">{{ cardError }}</p>
+            <p class="text-xs text-brand-light">Demo only — card details are not sent anywhere and no charge is made.</p>
+            <div class="flex gap-2 pt-1">
+              <button type="button" class="btn-outline btn-md flex-1" @click="cardOpen = false">Cancel</button>
+              <button type="submit" class="btn-primary btn-md flex-1"><CreditCard class="h-4 w-4" /> Save card</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
