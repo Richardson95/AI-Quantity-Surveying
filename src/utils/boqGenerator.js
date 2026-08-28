@@ -39,7 +39,8 @@ export function disciplineFor(name) {
 // per drawing below. Rates match the pricing database's Lagos figures.
 const TEMPLATES = {
   substructure: [
-    { section: 'Substructure', desc: 'Site clearance and excavation to reduce levels', unit: 'm³', qty: 1240, rate: 3500 },
+    { section: 'Substructure', desc: 'Site clearance and removal of vegetable topsoil', unit: 'm²', qty: 420, rate: 950 },
+    { section: 'Substructure', desc: 'Excavation to reduce levels', unit: 'm³', qty: 1240, rate: 3500 },
     { section: 'Substructure', desc: 'Plain in-situ concrete (1:3:6) in blinding', unit: 'm³', qty: 86, rate: 52000 },
     { section: 'Substructure', desc: 'Reinforced concrete (1:2:4) in foundation bases', unit: 'm³', qty: 142, rate: 78000 },
     { section: 'Substructure', desc: 'Hardcore filling, compacted in layers', unit: 'm³', qty: 96, rate: 18000 },
@@ -47,9 +48,15 @@ const TEMPLATES = {
   ],
   structure: [
     { section: 'Substructure', desc: 'High-yield steel reinforcement Y16 bars', unit: 'tonne', qty: 38, rate: 980000 },
-    { section: 'Superstructure', desc: 'Reinforced concrete columns (1:2:4)', unit: 'm³', qty: 64, rate: 82000 },
-    { section: 'Superstructure', desc: 'Reinforced concrete beams (1:2:4)', unit: 'm³', qty: 48, rate: 80000 },
-    { section: 'Superstructure', desc: 'Reinforced concrete suspended slab 150mm', unit: 'm²', qty: 720, rate: 24500 },
+    { section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in columns', unit: 'm³', qty: 64, rate: 82000 },
+    // 225 x 225mm column: 0.9m girth per metre height / 0.0506 m3 = 17.8 m2 per m3.
+    { section: 'Superstructure', desc: 'Formwork to sides of columns', unit: 'm²', qty: 1139, rate: 5200 },
+    { section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in beams', unit: 'm³', qty: 48, rate: 80000 },
+    // 225 x 450mm beam: 1.125m girth per metre run / 0.101 m3 = 11.1 m2 per m3.
+    { section: 'Superstructure', desc: 'Formwork to sides and soffits of beams', unit: 'm²', qty: 533, rate: 5200 },
+    // 720 m2 of 150mm slab = 108 m3 of concrete.
+    { section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in suspended slab, 150mm thick', unit: 'm³', qty: 108, rate: 80000 },
+    { section: 'Superstructure', desc: 'Formwork to soffit of suspended slab', unit: 'm²', qty: 720, rate: 4500 },
   ],
   architectural: [
     { section: 'Superstructure', desc: '225mm sandcrete block wall in cement mortar', unit: 'm²', qty: 1860, rate: 6800 },

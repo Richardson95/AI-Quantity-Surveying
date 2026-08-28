@@ -114,22 +114,38 @@ const BOQ_RULES = [
   // --- substructure -------------------------------------------------------
   { test: /excavat/i, unit: 'm³', section: 'Substructure', desc: 'Excavation to reduce levels', rate: 3500 },
   { test: /blinding/i, unit: 'm³', section: 'Substructure', desc: 'Plain in-situ concrete (1:3:6) in blinding', rate: 52000 },
-  // 50mm blinding = 0.05 m3 per m2 of area covered.
-  { test: /blinding/i, unit: 'm²', section: 'Substructure', desc: 'Plain in-situ concrete blinding, 50mm thick', rate: 2600 },
+  // 50mm blinding measured superficially is still concrete, so bill the volume.
+  { test: /blinding/i, unit: 'm²', emit: [
+    { section: 'Substructure', desc: 'Plain in-situ concrete (1:3:6) in blinding, 50mm thick', unit: 'm³', rate: 52000, factor: 0.05 },
+  ] },
   { test: /foundation|footing/i, unit: 'm³', section: 'Substructure', desc: 'Reinforced concrete (1:2:4) in foundations', rate: 78000 },
-  // Strip footing 600 x 225mm = 0.135 m3 per metre run.
-  { test: /trench|strip footing|foundation run/i, unit: 'm', section: 'Substructure', desc: 'Reinforced concrete strip footing (600 x 225mm)', rate: 10530 },
+  // Strip footing 600 x 225mm: 0.135 m3 and 0.45 m2 of formwork per metre run.
+  { test: /trench|strip footing|foundation run/i, unit: 'm', emit: [
+    { section: 'Substructure', desc: 'Reinforced concrete (1:2:4) in strip footing, 600 x 225mm', unit: 'm³', rate: 78000, factor: 0.135 },
+    { section: 'Substructure', desc: 'Formwork to sides of strip footing', unit: 'm²', rate: 4800, factor: 0.45 },
+  ] },
   { test: /hardcore/i, unit: 'm³', section: 'Substructure', desc: 'Hardcore filling, compacted in layers', rate: 18000 },
   { test: /damp.?proof|dpm/i, unit: 'm²', section: 'Substructure', desc: 'Damp-proof membrane 1000 gauge', rate: 1600 },
 
   // --- frame --------------------------------------------------------------
-  { test: /column/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete columns (1:2:4)', rate: 82000 },
-  // Column 225 x 225mm x 3.0m storey = 0.152 m3 each.
-  { test: /column/i, unit: 'no', section: 'Superstructure', desc: 'Reinforced concrete column (225 x 225mm x 3.0m)', rate: 12460 },
-  { test: /beam/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete beams (1:2:4)', rate: 80000 },
-  // Beam 225 x 450mm = 0.101 m3 per metre run.
-  { test: /beam/i, unit: 'm', section: 'Superstructure', desc: 'Reinforced concrete beam (225 x 450mm)', rate: 8100 },
-  { test: /slab/i, unit: 'm²', section: 'Superstructure', desc: 'Reinforced concrete suspended slab 150mm', rate: 24500 },
+  { test: /column/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in columns', rate: 82000 },
+  // A count of columns yields concrete by volume plus formwork by girth.
+  // 225 x 225mm x 3.0m storey: 0.152 m3 and 2.70 m2 of formwork each.
+  { test: /column/i, unit: 'no', emit: [
+    { section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in columns', unit: 'm³', rate: 82000, factor: 0.152 },
+    { section: 'Superstructure', desc: 'Formwork to sides of columns', unit: 'm²', rate: 5200, factor: 2.70 },
+  ] },
+  { test: /beam/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in beams', rate: 80000 },
+  // 225 x 450mm beam: 0.101 m3 and 1.125 m2 of formwork per metre run.
+  { test: /beam/i, unit: 'm', emit: [
+    { section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in beams', unit: 'm³', rate: 80000, factor: 0.101 },
+    { section: 'Superstructure', desc: 'Formwork to sides and soffits of beams', unit: 'm²', rate: 5200, factor: 1.125 },
+  ] },
+  // A slab area gives 150mm of concrete by volume, and formwork to its soffit.
+  { test: /slab/i, unit: 'm²', emit: [
+    { section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in suspended slab, 150mm thick', unit: 'm³', rate: 80000, factor: 0.15 },
+    { section: 'Superstructure', desc: 'Formwork to soffit of suspended slab', unit: 'm²', rate: 4500, factor: 1 },
+  ] },
   { test: /slab|frame|concrete volume/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in frame', rate: 80000 },
 
   // --- walling ------------------------------------------------------------
@@ -205,6 +221,27 @@ export function measurementsToBoqItems(measurements = []) {
     // Keyword AND unit must agree - a rate quoted per square metre must never
     // be applied to a length, nor a per-cubic-metre rate to a count.
     const rule = BOQ_RULES.find((r) => r.unit === unit && r.test.test(m.name))
+    const confidence = m.auto ? 93 : 100
+    const sources = m.source ? [m.source] : []
+
+    // One measurement can bill as several items - a slab area gives concrete
+    // by volume and formwork by area, which is how a BOQ is actually written.
+    if (rule && rule.emit) {
+      for (const out of rule.emit) {
+        const converted = qty * out.factor
+        items.push({
+          desc: out.desc,
+          section: out.section,
+          unit: out.unit,
+          qty: out.unit === 'no' ? Math.max(1, Math.round(converted)) : Math.round(converted * 100) / 100,
+          rate: out.rate,
+          confidence,
+          sources,
+        })
+      }
+      continue
+    }
+
     items.push({
       desc: rule ? rule.desc : m.name,
       section: rule ? rule.section : 'Superstructure',
@@ -212,8 +249,8 @@ export function measurementsToBoqItems(measurements = []) {
       qty,
       rate: rule ? rule.rate : FALLBACK_RATE[unit] || 10000,
       // Taken off a drawing rather than inferred, so confidence is high.
-      confidence: m.auto ? 93 : 100,
-      sources: m.source ? [m.source] : [],
+      confidence,
+      sources,
     })
   }
 
