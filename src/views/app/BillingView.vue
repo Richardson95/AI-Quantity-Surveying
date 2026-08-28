@@ -1,7 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { Check, Sparkles, CreditCard, Download, Zap, X, Lock, ShieldCheck } from 'lucide-vue-next'
+import { Check, Sparkles, CreditCard, Download, Zap, X, ShieldCheck } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -12,11 +11,8 @@ import { formatFull } from '@/utils/format'
 
 const auth = useAuthStore()
 const { toast } = useToast()
-const route = useRoute()
 const subscription = useSubscriptionStore()
 
-// Set when the router bounced someone here because their trial ran out.
-const locked = computed(() => route.query.locked === '1' || !subscription.hasAccess)
 const paying = ref('')
 
 onMounted(() => subscription.refresh())
@@ -137,56 +133,7 @@ function pct(u, t) {
 
 <template>
   <div>
-    <!-- Trial over: subscribing is the only way back in -->
-    <div v-if="locked" class="space-y-6">
-      <div class="relative overflow-hidden rounded-2xl bg-navy-gradient p-6 text-center sm:p-10">
-        <div class="absolute inset-0 bg-hero-glow"></div>
-        <div class="relative mx-auto max-w-xl">
-          <div class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-white/10 text-primary-light">
-            <Lock class="h-7 w-7" />
-          </div>
-          <h2 class="mt-5 font-display text-3xl font-extrabold text-white">Your free trial has ended</h2>
-          <p class="mt-3 text-white/70">
-            Your {{ TRIAL_DAYS }}-day trial of BuildQ AI is over. Choose a plan to get straight back to your
-            projects, BOQs and estimates — everything is exactly where you left it.
-          </p>
-          <p class="mt-4 inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm text-white/80">
-            <ShieldCheck class="h-4 w-4 shrink-0 text-primary-light" /> Secure payment by Paystack · cancel anytime
-          </p>
-        </div>
-      </div>
-
-      <div class="grid gap-5 lg:grid-cols-3">
-        <div v-for="p in plans" :key="p.name" class="card flex flex-col p-6"
-          :class="p.name === 'Professional' ? 'ring-2 ring-primary lg:-mt-2' : ''">
-          <span v-if="p.name === 'Professional'" class="badge mb-3 self-start bg-brand-gradient text-white">
-            <Sparkles class="h-3 w-3" /> Most popular
-          </span>
-          <h3 class="font-display text-lg font-bold text-secondary">{{ p.name }}</h3>
-          <p class="text-sm text-brand-muted">{{ p.blurb }}</p>
-          <p class="mt-4 font-display text-3xl font-extrabold text-secondary">
-            {{ p.price === null ? 'Custom' : formatFull(p.price) }}
-            <span v-if="p.price !== null" class="text-sm font-medium text-brand-light">/mo</span>
-          </p>
-          <ul class="mt-5 flex-1 space-y-2.5 text-sm text-brand-muted">
-            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.credits }} AI credits / month</li>
-            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.seats }} team seats</li>
-            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.storage }} GB storage</li>
-            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> Unlimited projects &amp; BOQs</li>
-          </ul>
-          <button class="btn-primary btn-md mt-6" :disabled="paying === p.name" @click="choosePlan(p)">
-            <CreditCard class="h-4 w-4" />
-            {{ paying === p.name ? 'Opening Paystack…' : p.price === null ? 'Contact sales' : `Pay ${formatFull(p.price)}` }}
-          </button>
-        </div>
-      </div>
-
-      <p class="text-center text-sm text-brand-muted">
-        Need help choosing? <RouterLink to="/contact" class="font-semibold text-primary hover:underline">Talk to us</RouterLink>.
-      </p>
-    </div>
-
-    <div v-else class="space-y-6">
+    <div class="space-y-6">
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">Billing & Subscription</h2>
         <p class="mt-1 text-brand-muted">Manage your plan, usage and invoices</p>

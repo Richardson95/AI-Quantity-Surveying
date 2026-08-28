@@ -7,6 +7,7 @@ import {
   Settings, Search, Bell, Menu, X, Plus, LogOut, ChevronDown, Store,
 } from 'lucide-vue-next'
 import BrandLogo from '@/components/BrandLogo.vue'
+import TrialPaywall from '@/components/TrialPaywall.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProjectsStore } from '@/stores/projects'
 import { useSubscriptionStore, TRIAL_DAYS } from '@/stores/subscription'
@@ -173,6 +174,9 @@ function logout() {
 
 <template>
   <div class="flex min-h-screen bg-brand-bg">
+    <!-- Blocks the workspace once the trial ends; paying is the only way past -->
+    <TrialPaywall />
+
     <!-- Mobile overlay -->
     <transition name="page">
       <div v-if="sidebarOpen" class="fixed inset-0 z-40 bg-secondary/40 lg:hidden" @click="sidebarOpen = false"></div>

@@ -79,9 +79,11 @@ Every account starts on a **14-day free trial**, no card required. A countdown
 shows in the sidebar and, from the trial's start, as a banner above the page —
 turning amber at 7 days and red at 3.
 
-When the trial elapses the router locks every `/app` route except billing, so
-the workspace cannot be used until a plan is paid for. Nothing is deleted: the
-lock screen says so, and access returns the moment a payment verifies.
+When the trial elapses, `TrialPaywall` covers the workspace with a modal the
+user cannot dismiss — no close button, Escape is swallowed, backdrop clicks do
+nothing, and page scrolling is locked. The dashboard stays visible behind it,
+so the user can see their projects are still there. The only ways out are to
+pay or to sign out. Access returns the moment a payment verifies.
 
 Trial and subscription state lives in `src/stores/subscription.js`. It drives
 the UI, but it is **not** a security boundary — a determined user can edit
