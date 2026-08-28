@@ -5,7 +5,8 @@ import { Ruler, Square, Box, Hash, MousePointer2, ZoomIn, ZoomOut, Layers, Spark
 import { useToast } from '@/composables/useToast'
 import { useDocumentsStore } from '@/stores/documents'
 import { useProjectsStore } from '@/stores/projects'
-import { detectMeasurements, measurementsToBoqItems, numericValue } from '@/utils/takeoff'
+import { measurementsToBoqItems, numericValue } from '@/utils/takeoff'
+import { detectFrom, hasAnalysisEngine, SOURCE_LABELS } from '@/services/analysis'
 import FileDropzone from '@/components/FileDropzone.vue'
 import DocumentList from '@/components/DocumentList.vue'
 
@@ -72,10 +73,12 @@ function selectPlan(doc) {
 }
 
 const detecting = ref(false)
+const detectSource = ref(hasAnalysisEngine() ? 'engine' : 'stand-in')
+const detectProvenance = computed(() => SOURCE_LABELS[detectSource.value])
 
 // Detection reads the plan that is actually open. Previously it appended two
 // fixed rows and then reported "no new quantities" on every later click.
-function autoDetect() {
+async function autoDetect() {
   if (detecting.value) return
   if (!activePlan.value) {
     toast('Upload a plan first — measurements are detected from it', 'warning')
@@ -86,18 +89,19 @@ function autoDetect() {
   detecting.value = true
   toast(`Reading ${activePlan.value.name}…`, 'info')
 
-  setTimeout(() => {
-    const found = detectMeasurements(activePlan.value)
-    // Replace previous auto-detections for this plan; keep anything measured
-    // by hand so a re-run never discards the user's own work.
-    const manual = measurements.value.filter((m) => !m.auto || m.source !== activePlan.value.name)
-    measurements.value = [
-      ...manual,
-      ...found.map((f) => ({ ...f, id: ++mId })),
-    ]
-    detecting.value = false
-    toast(`${found.length} quantities detected from ${activePlan.value.name}`)
-  }, 1500)
+  const result = await detectFrom(activePlan.value)
+  // Replace previous auto-detections for this plan; keep anything measured by
+  // hand so a re-run never discards the user's own work.
+  const manual = measurements.value.filter((m) => !m.auto || m.source !== activePlan.value.name)
+  measurements.value = [...manual, ...result.measurements.map((f) => ({ ...f, id: ++mId }))]
+  detectSource.value = result.source
+  detecting.value = false
+
+  result.warnings.forEach((w) => toast(w, 'warning'))
+  if (result.degraded) toast('Analysis engine unavailable — showing template figures', 'warning')
+  toast(
+    `${result.measurements.length} quantities ${result.source === 'engine' ? 'measured from' : 'estimated for'} ${activePlan.value.name}`
+  )
 }
 
 // Manual entry asks what you measured; clicking the canvas with a tool still
@@ -206,6 +210,9 @@ function syncToBoq() {
           Digital measurement from
           <span class="font-medium text-secondary">{{ activePlan ? activePlan.name : 'Ground Floor Plan.pdf' }}</span>
         </p>
+        <p v-if="detectSource !== 'engine'" class="mt-1 max-w-xl text-xs text-warning">
+          {{ detectProvenance.detail }}
+        </p>
       </div>
       <div class="flex flex-wrap gap-2 self-start">
         <button class="btn-outline btn-md" @click="plansOpen = !plansOpen">
@@ -285,7 +292,8 @@ function syncToBoq() {
           <div class="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg bg-white/10 px-2.5 py-1.5 text-xs text-white backdrop-blur">
             <Ruler class="h-3.5 w-3.5 text-primary-light" />
             <span v-if="activeMeta">{{ activeMeta.type }} tool — click the drawing to measure</span>
-            <span v-else>Scale 1:100 · auto-detected</span>
+            <span v-else-if="detectSource === 'engine'">Scale 1:100 · auto-detected</span>
+            <span v-else>Illustrative view — drawing not read</span>
           </div>
         </div>
       </div>

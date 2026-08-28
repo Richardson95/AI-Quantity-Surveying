@@ -90,3 +90,37 @@ the UI, but it is **not** a security boundary — a determined user can edit
 browser storage. What actually prevents free access is that a valid
 subscription record can only be produced by a server-verified payment. When a
 real backend exists, read this state from the server on login.
+
+## Drawing analysis
+
+**There is no drawing analysis yet.** Uploaded files are stored, previewed and
+downloaded for real, but nothing reads their contents — no OCR, no CAD parsing,
+no geometry extraction. Quantities come from a template matched on the file
+name and scaled by a hash of the name and size.
+
+The app says so. Anything derived this way is badged **Template estimate**, the
+drawing viewer reads *Not analyzed*, and per-item confidence is hidden, because
+a confidence score on a figure nothing measured is a lie.
+
+### Connecting the real engine
+
+`src/services/analysis.js` is the only place the app talks to the engine. Set
+`VITE_ANALYSIS_API_URL` and implement two endpoints; nothing else changes.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /analyze` | One drawing in, detected elements and measurements out |
+| `POST /boq` | Document ids in, priced BOQ lines out |
+
+The full request and response shapes are documented at the top of
+`src/services/analysis.js`. Two rules the engine must honour:
+
+- **Units are canonical** — see `src/utils/units.js`. In-situ concrete is `m³`,
+  formwork `m²`, reinforcement `tonne`, blockwork and finishes `m²`, pipes and
+  cables `m`, fittings `no`, site clearance `m²`.
+- **Confidence is 0–1**, and omitted where a quantity was not actually
+  measured.
+
+If the engine is configured but unreachable, the app falls back to template
+figures, tells the user it has done so, and re-labels the output accordingly —
+it never silently presents estimates as measurements.

@@ -6,7 +6,7 @@ import {
 } from 'lucide-vue-next'
 import { useProjectsStore } from '@/stores/projects'
 import { useDocumentsStore } from '@/stores/documents'
-import { generateBoq, reviewBoq } from '@/utils/boqGenerator'
+import { buildBoq, hasAnalysisEngine, SOURCE_LABELS } from '@/services/analysis'
 import { useToast } from '@/composables/useToast'
 import { normalizeUnit, COMMON_UNITS, unitsCompatible, dimensionOf } from '@/utils/units'
 import { downloadMock } from '@/utils/download'
@@ -42,17 +42,20 @@ const filtered = computed(() =>
 )
 const total = computed(() => filtered.value.reduce((a, i) => a + i.qty * i.rate, 0))
 
-// Suggestions are derived from the BOQ that was actually produced, so they
-// never reference item codes that no longer exist.
-const suggestions = computed(() =>
-  store.boqSources.length ? reviewBoq(store.boqItems, drawings.value) : []
-)
+// Notes come back with the BOQ, so they always describe what was produced.
+const suggestions = ref([])
+
+// Where the current figures came from: a real analysis engine, or the local
+// template stand-in. The UI must never imply the drawing was read when it
+// was not.
+const boqSource = ref(hasAnalysisEngine() ? 'engine' : 'stand-in')
+const provenance = computed(() => SOURCE_LABELS[boqSource.value])
 const suggColor = { warning: 'border-warning/30 bg-warning/5', success: 'border-success/30 bg-success/5', info: 'border-primary/30 bg-primary/5' }
 const suggDot = { warning: 'bg-warning', success: 'bg-success', info: 'bg-primary' }
 
 // The BOQ is built from the uploaded drawings — with none uploaded there is
 // nothing to derive it from, so say so rather than inventing quantities.
-function generate() {
+async function generate() {
   if (!drawings.value.length) {
     toast('Upload a drawing or plan first — the BOQ is generated from them', 'warning')
     return
@@ -60,14 +63,22 @@ function generate() {
   if (generating.value) return
 
   generating.value = true
-  setTimeout(() => {
-    const { items, sources } = generateBoq(drawings.value)
-    store.replaceBoqItems(items)
-    activeSection.value = 'All'
-    editingId.value = null
-    generating.value = false
-    toast(`BOQ generated from ${sources.length} drawing${sources.length > 1 ? 's' : ''} — ${items.length} items`)
-  }, 1400)
+  const result = await buildBoq(drawings.value, { projectId: PROJECT_ID })
+  generating.value = false
+
+  store.replaceBoqItems(result.items)
+  suggestions.value = result.notes
+  boqSource.value = result.source
+  activeSection.value = 'All'
+  editingId.value = null
+
+  if (result.degraded) {
+    toast('Analysis engine unavailable — showing template figures instead', 'warning')
+  }
+  toast(
+    `${result.source === 'engine' ? 'Measured' : 'Estimated'} ${result.items.length} items from ` +
+      `${result.sources.length} drawing${result.sources.length > 1 ? 's' : ''}`
+  )
 }
 function uploadDrawing() {
   dropzone.value?.browse()
@@ -190,11 +201,16 @@ function confidenceColor(c) {
         <h2 class="font-display text-2xl font-bold text-secondary">BOQ Workspace</h2>
         <p class="mt-1 text-brand-muted">Lekki 4-Bedroom Duplex · <span class="font-mono text-sm">PRJ-1042</span></p>
         <p v-if="store.boqSources.length" class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-brand-light">
-          <Cpu class="h-3.5 w-3.5 shrink-0 text-primary" />
-          Generated from
+          <span class="badge" :class="boqSource === 'engine' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'">
+            <Cpu class="h-3 w-3" /> {{ provenance.label }}
+          </span>
+          <span>from</span>
           <span v-for="(s, i) in store.boqSources" :key="s" class="font-medium text-brand-muted">
             {{ s }}<span v-if="i < store.boqSources.length - 1">,</span>
           </span>
+        </p>
+        <p v-if="store.boqSources.length && boqSource !== 'engine'" class="mt-1 max-w-2xl text-xs text-warning">
+          {{ provenance.detail }}
         </p>
         <p v-else class="mt-1 flex items-center gap-1.5 text-xs text-warning">
           <Cpu class="h-3.5 w-3.5 shrink-0" /> Sample BOQ — upload a drawing and regenerate to build it from your own plans.
@@ -225,8 +241,10 @@ function confidenceColor(c) {
               <Layers class="h-4 w-4 shrink-0 text-primary" />
               <span class="truncate">{{ activeDrawing ? activeDrawing.name : 'Ground Floor Plan.pdf' }}</span>
             </span>
-            <span class="badge shrink-0" :class="generating ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'">
-              <component :is="generating ? Cpu : Check" class="h-3 w-3" /> {{ generating ? 'Analyzing…' : 'Analyzed' }}
+            <span class="badge shrink-0"
+              :class="generating ? 'bg-warning/10 text-warning' : boqSource === 'engine' ? 'bg-success/10 text-success' : 'bg-brand-border text-brand-muted'">
+              <component :is="generating ? Cpu : Check" class="h-3 w-3" />
+              {{ generating ? 'Reading…' : boqSource === 'engine' ? 'Analyzed' : 'Not analyzed' }}
             </span>
           </div>
           <div class="relative aspect-[4/3] bg-secondary">
@@ -259,7 +277,10 @@ function confidenceColor(c) {
             />
             <div class="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg bg-white/10 px-2.5 py-1.5 text-xs text-white backdrop-blur">
               <Cpu class="h-3.5 w-3.5 text-primary-light" />
-              {{ activeDrawing && activeDrawing.elements ? activeDrawing.elements : 14 }} elements detected
+              <template v-if="boqSource === 'engine'">
+                {{ activeDrawing && activeDrawing.elements ? activeDrawing.elements : 0 }} elements detected
+              </template>
+              <template v-else>Preview only — drawing not read</template>
             </div>
           </div>
         </div>
@@ -299,7 +320,9 @@ function confidenceColor(c) {
         <div class="card p-5">
           <div class="mb-4 flex items-center gap-2">
             <div class="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary"><Sparkles class="h-4 w-4" /></div>
-            <h3 class="font-display font-bold text-secondary">AI Suggestions</h3>
+            <h3 class="font-display font-bold text-secondary">
+              {{ boqSource === 'engine' ? 'AI Suggestions' : 'Bill Review' }}
+            </h3>
           </div>
           <div v-if="suggestions.length" class="space-y-2.5">
             <div v-for="(s, i) in suggestions" :key="i" class="flex gap-3 rounded-xl border p-3" :class="suggColor[s.type]">
@@ -385,7 +408,9 @@ function confidenceColor(c) {
                 </td>
                 <td class="px-2 py-3 text-right font-semibold text-secondary">{{ (item.qty * item.rate).toLocaleString() }}</td>
                 <td class="px-2 py-3 text-center">
-                  <span class="text-xs font-bold" :class="confidenceColor(item.confidence)">{{ item.confidence }}%</span>
+                  <span v-if="boqSource === 'engine' && item.confidence != null"
+                    class="text-xs font-bold" :class="confidenceColor(item.confidence)">{{ item.confidence }}%</span>
+                  <span v-else class="text-xs text-brand-light" title="Confidence is only reported for measured quantities">—</span>
                 </td>
                 <td class="px-5 py-3">
                   <div class="flex justify-end gap-1 transition-opacity group-hover:opacity-100" :class="editingId === item.id ? 'opacity-100' : 'opacity-0'">
