@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed } from 'vue'
-import { User, Bell, Lock, Globe, Building2, Camera, Check } from 'lucide-vue-next'
+import { ref } from 'vue'
+import { User, Lock, Globe, Building2, Camera, Check } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 
@@ -12,7 +12,6 @@ const saved = ref(false)
 const tabs = [
   { id: 'profile', name: 'Profile', icon: User },
   { id: 'company', name: 'Company', icon: Building2 },
-  { id: 'notifications', name: 'Notifications', icon: Bell },
   { id: 'security', name: 'Security', icon: Lock },
   { id: 'preferences', name: 'Preferences', icon: Globe },
 ]
@@ -36,7 +35,6 @@ const defaults = {
   language: 'English',
   dateFormat: 'DD/MM/YYYY',
   defaultRegion: 'Lagos',
-  notifications: { boqComplete: true, variations: true, teamActivity: false, priceAlerts: true, weekly: true },
 }
 
 const stored = loadPrefs()
@@ -50,13 +48,10 @@ function blankForm() {
     phone: auth.user.phone,
     ...defaults,
     ...(stored || {}),
-    notifications: { ...defaults.notifications, ...((stored || {}).notifications || {}) },
   }
 }
 
 const form = ref(blankForm())
-// Kept separate so the toggles bind cleanly, but saved with everything else.
-const notifications = computed(() => form.value.notifications)
 
 const passwords = ref({ current: '', next: '', confirm: '' })
 const errors = ref('')
@@ -191,21 +186,6 @@ function onPhotoPicked(e) {
         </div>
 
         <!-- Notifications -->
-        <div v-else-if="tab === 'notifications'" class="space-y-2">
-          <h3 class="mb-4 font-display text-lg font-bold text-secondary">Notifications</h3>
-          <label v-for="(val, key) in notifications" :key="key"
-            class="flex cursor-pointer items-center justify-between rounded-xl border border-brand-border-light p-4 hover:bg-brand-bg">
-            <div>
-              <p class="font-medium capitalize text-secondary">{{ key.replace(/([A-Z])/g, ' $1') }}</p>
-              <p class="text-xs text-brand-muted">Email me about this activity</p>
-            </div>
-            <button type="button" @click="notifications[key] = !notifications[key]"
-              class="relative h-6 w-11 rounded-full transition-colors" :class="val ? 'bg-primary' : 'bg-brand-border'">
-              <span class="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform" :class="val ? 'left-[22px]' : 'left-0.5'"></span>
-            </button>
-          </label>
-        </div>
-
         <!-- Security -->
         <div v-else-if="tab === 'security'" class="space-y-6">
           <h3 class="font-display text-lg font-bold text-secondary">Security</h3>
