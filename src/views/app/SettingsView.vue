@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import { User, Lock, Globe, Building2, Camera, Check } from 'lucide-vue-next'
+import { User, Lock, Building2, Camera, Check } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 
@@ -13,7 +13,6 @@ const tabs = [
   { id: 'profile', name: 'Profile', icon: User },
   { id: 'company', name: 'Company', icon: Building2 },
   { id: 'security', name: 'Security', icon: Lock },
-  { id: 'preferences', name: 'Preferences', icon: Globe },
 ]
 
 const PREFS_KEY = 'buildq.settings'
@@ -31,10 +30,6 @@ const defaults = {
   industry: 'Construction & QS',
   country: 'Nigeria',
   currency: '₦ Naira (NGN)',
-  standard: 'RICS / SMM7',
-  language: 'English',
-  dateFormat: 'DD/MM/YYYY',
-  defaultRegion: 'Lagos',
 }
 
 const stored = loadPrefs()
@@ -187,7 +182,7 @@ function onPhotoPicked(e) {
 
         <!-- Notifications -->
         <!-- Security -->
-        <div v-else-if="tab === 'security'" class="space-y-6">
+        <div v-else class="space-y-6">
           <h3 class="font-display text-lg font-bold text-secondary">Security</h3>
           <div class="grid gap-5 sm:grid-cols-2">
             <div><label class="label">Current password</label><input v-model="passwords.current" type="password" class="input" placeholder="••••••••" /></div>
@@ -201,25 +196,6 @@ function onPhotoPicked(e) {
               <p class="text-xs text-brand-muted">Add an extra layer of security to your account</p>
             </div>
             <span class="badge bg-success/10 text-success"><Check class="h-3 w-3" /> Enabled</span>
-          </div>
-        </div>
-
-        <!-- Preferences -->
-        <div v-else class="space-y-6">
-          <h3 class="font-display text-lg font-bold text-secondary">Preferences</h3>
-          <div class="grid gap-5 sm:grid-cols-2">
-            <div><label class="label">Measurement standard</label>
-              <select v-model="form.standard" class="input"><option>RICS / SMM7</option><option>NIQS</option><option>POMI</option><option>Metric (ISO)</option></select>
-            </div>
-            <div><label class="label">Language</label>
-              <select v-model="form.language" class="input"><option>English</option><option>French</option></select>
-            </div>
-            <div><label class="label">Date format</label>
-              <select v-model="form.dateFormat" class="input"><option>DD/MM/YYYY</option><option>MM/DD/YYYY</option></select>
-            </div>
-            <div><label class="label">Default region pricing</label>
-              <select v-model="form.defaultRegion" class="input"><option>Lagos</option><option>Abuja</option><option>Port Harcourt</option><option>Kano</option></select>
-            </div>
           </div>
         </div>
 
