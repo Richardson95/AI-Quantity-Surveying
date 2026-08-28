@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { Database, Search, Plus, TrendingUp, TrendingDown, Package, HardHat, Wrench, Upload, Globe, Trash2, X } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
+import { normalizeUnit, COMMON_UNITS } from '@/utils/units'
 
 const { toast } = useToast()
 const query = ref('')
@@ -70,7 +71,7 @@ function addRate() {
     id: ++rateId,
     name,
     cat: draft.value.cat,
-    unit: draft.value.unit.trim(),
+    unit: normalizeUnit(draft.value.unit),
     rate: Number(draft.value.rate),
     change: 0,
     region: region.value,
@@ -115,8 +116,9 @@ function onLibraryPicked(e) {
         id: ++rateId,
         name,
         cat: normalised,
-        unit: unit || 'no',
+        unit: normalizeUnit(unit) || 'no',
         rate: Number(String(rate).replace(/[^0-9.]/g, '')) || 0,
+        // Imported libraries spell units many ways; normalise on the way in.
         change: 0,
         region: region.value,
         icon: iconFor[normalised],
@@ -137,6 +139,9 @@ const filtered = computed(() => items.value.filter((i) => {
 
 <template>
   <div class="space-y-6">
+    <datalist id="unit-options">
+      <option v-for="u in COMMON_UNITS" :key="u" :value="u" />
+    </datalist>
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">Pricing Database</h2>
@@ -198,7 +203,8 @@ const filtered = computed(() => items.value.filter((i) => {
                 </select>
               </td>
               <td class="px-3 py-3 text-brand-muted">
-                <input v-model="i.unit" class="w-16 rounded-md bg-transparent hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary" />
+                <input v-model="i.unit" list="unit-options" class="w-16 rounded-md bg-transparent hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+                  @change="i.unit = normalizeUnit(i.unit)" />
               </td>
               <td class="px-3 py-3 text-right font-bold text-secondary">
                 <span class="text-brand-light">₦</span>
@@ -246,7 +252,8 @@ const filtered = computed(() => items.value.filter((i) => {
               </div>
               <div>
                 <label class="label">Unit</label>
-                <input v-model="draft.unit" class="input" placeholder="bag, m², tonne, day…" />
+                <input v-model="draft.unit" list="unit-options" class="input" placeholder="bag, m², tonne, day…"
+                  @change="draft.unit = normalizeUnit(draft.unit)" />
               </div>
             </div>
             <div>

@@ -62,9 +62,10 @@ function downloadTemplate() {
     'BuildQ-cost-template.csv',
     [
       'Item,Section,Unit,Qty,Rate',
-      'Reinforced concrete (1:2:4) in foundation bases,Substructure,m3,142,78000',
-      '225mm sandcrete block wall,Superstructure,m2,1860,6800',
-      'Aluminium roofing sheet 0.55mm,Roofing,m2,410,9200',
+      'Reinforced concrete (1:2:4) in foundation bases,Substructure,m³,142,78000',
+      '225mm sandcrete block wall,Superstructure,m²,1860,6800',
+      'Aluminium roofing sheet 0.55mm,Roofing,m²,410,9200',
+      'Y16 high-yield reinforcement,Substructure,tonne,18.4,980000',
       'Flush doors with hardwood frame,Doors & Windows,no,28,65000',
     ].join('\n')
   )
@@ -96,7 +97,8 @@ defineExpose({ browse })
             {{ busy ? 'Reading your costs…' : dragging ? 'Release to import' : 'Upload your own cost data' }}
           </p>
           <p class="mt-1 text-xs text-brand-muted">
-            CSV with item, unit, quantity and rate columns — a supplier quote, priced BOQ or internal rate schedule
+            CSV with item, unit, quantity and rate columns — a supplier quote, priced BOQ or internal rate schedule.
+            Units such as m2, SQM or nr are converted automatically.
           </p>
         </div>
         <div class="flex flex-wrap justify-center gap-2">

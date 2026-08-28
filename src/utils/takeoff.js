@@ -101,38 +101,83 @@ export function detectMeasurements(doc) {
   })
 }
 
-// Keyword-driven mapping from a measurement to a priced BOQ line. Rates match
-// the pricing database's Lagos figures.
+// Keyword-driven mapping from a measurement to a priced BOQ line.
+// ---------------------------------------------------------------------------
+// Each rule states the unit its rate is quoted in, and a rule only applies to a
+// quantity measured in that same unit. Without this a wall measured as a linear
+// run was priced at a per-square-metre rate, and a column count at a per-cubic-
+// metre rate - both badly wrong. Where a trade is commonly taken off in more
+// than one unit the rate is given for each, with the assumed dimensions stated
+// in the description so the figure can be checked.
+// ---------------------------------------------------------------------------
 const BOQ_RULES = [
-  { test: /excavat/i, section: 'Substructure', desc: 'Excavation to reduce levels', rate: 3500 },
-  { test: /blinding/i, section: 'Substructure', desc: 'Plain in-situ concrete (1:3:6) in blinding', rate: 52000 },
-  { test: /foundation|trench/i, section: 'Substructure', desc: 'Reinforced concrete (1:2:4) in foundations', rate: 78000 },
-  { test: /column/i, section: 'Superstructure', desc: 'Reinforced concrete columns (1:2:4)', rate: 82000 },
-  { test: /beam/i, section: 'Superstructure', desc: 'Reinforced concrete beams (1:2:4)', rate: 80000 },
-  { test: /slab/i, section: 'Superstructure', desc: 'Reinforced concrete suspended slab 150mm', rate: 24500 },
-  { test: /partition/i, section: 'Superstructure', desc: '150mm sandcrete block partition wall', rate: 5200 },
-  { test: /external wall|wall run|wall face/i, section: 'Superstructure', desc: '225mm sandcrete block wall', rate: 6800 },
-  { test: /roof covering|roof/i, section: 'Roofing', desc: 'Aluminium roofing sheet 0.55mm on timber', rate: 9200 },
-  { test: /ridge|hip/i, section: 'Roofing', desc: 'Ridge and hip capping', rate: 4200 },
-  { test: /fascia/i, section: 'Roofing', desc: 'PVC fascia and soffit board', rate: 4200 },
-  { test: /ceiling/i, section: 'Finishes', desc: 'PVC ceiling panels on noggins', rate: 4600 },
-  { test: /floor finish|tiling/i, section: 'Finishes', desc: 'Vitrified floor tiles 600x600mm', rate: 11500 },
-  { test: /landscap/i, section: 'External Works', desc: 'Landscaping and turfing', rate: 3200 },
-  { test: /paved|driveway/i, section: 'External Works', desc: 'Interlocking paving to driveway', rate: 5200 },
-  { test: /boundary/i, section: 'External Works', desc: 'Blockwork boundary wall, 225mm', rate: 7200 },
-  { test: /window/i, section: 'Doors & Windows', desc: 'Aluminium sliding windows with glazing', rate: 38000 },
-  { test: /door/i, section: 'Doors & Windows', desc: 'Flush doors with hardwood frame', rate: 65000 },
-  { test: /glazed|screen/i, section: 'Doors & Windows', desc: 'Aluminium glazed screen', rate: 62000 },
-  { test: /socket/i, section: 'Services', desc: '13A switched socket outlet', rate: 3200 },
-  { test: /lighting|light/i, section: 'Services', desc: 'LED panel light 18W', rate: 4800 },
-  { test: /distribution board/i, section: 'Services', desc: '6-way distribution board', rate: 28000 },
-  { test: /cable/i, section: 'Services', desc: '2.5mm² single core cable in conduit', rate: 520 },
-  { test: /soil pipe/i, section: 'Services', desc: 'PVC soil pipe 4" including fittings', rate: 4800 },
-  { test: /water pipe/i, section: 'Services', desc: 'PPR water pipe 20mm including fittings', rate: 2600 },
-  { test: /sanitary|fitting/i, section: 'Services', desc: 'Sanitary fittings, supply and install', rate: 68000 },
+  // --- substructure -------------------------------------------------------
+  { test: /excavat/i, unit: 'm³', section: 'Substructure', desc: 'Excavation to reduce levels', rate: 3500 },
+  { test: /blinding/i, unit: 'm³', section: 'Substructure', desc: 'Plain in-situ concrete (1:3:6) in blinding', rate: 52000 },
+  // 50mm blinding = 0.05 m3 per m2 of area covered.
+  { test: /blinding/i, unit: 'm²', section: 'Substructure', desc: 'Plain in-situ concrete blinding, 50mm thick', rate: 2600 },
+  { test: /foundation|footing/i, unit: 'm³', section: 'Substructure', desc: 'Reinforced concrete (1:2:4) in foundations', rate: 78000 },
+  // Strip footing 600 x 225mm = 0.135 m3 per metre run.
+  { test: /trench|strip footing|foundation run/i, unit: 'm', section: 'Substructure', desc: 'Reinforced concrete strip footing (600 x 225mm)', rate: 10530 },
+  { test: /hardcore/i, unit: 'm³', section: 'Substructure', desc: 'Hardcore filling, compacted in layers', rate: 18000 },
+  { test: /damp.?proof|dpm/i, unit: 'm²', section: 'Substructure', desc: 'Damp-proof membrane 1000 gauge', rate: 1600 },
+
+  // --- frame --------------------------------------------------------------
+  { test: /column/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete columns (1:2:4)', rate: 82000 },
+  // Column 225 x 225mm x 3.0m storey = 0.152 m3 each.
+  { test: /column/i, unit: 'no', section: 'Superstructure', desc: 'Reinforced concrete column (225 x 225mm x 3.0m)', rate: 12460 },
+  { test: /beam/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete beams (1:2:4)', rate: 80000 },
+  // Beam 225 x 450mm = 0.101 m3 per metre run.
+  { test: /beam/i, unit: 'm', section: 'Superstructure', desc: 'Reinforced concrete beam (225 x 450mm)', rate: 8100 },
+  { test: /slab/i, unit: 'm²', section: 'Superstructure', desc: 'Reinforced concrete suspended slab 150mm', rate: 24500 },
+  { test: /slab|frame|concrete volume/i, unit: 'm³', section: 'Superstructure', desc: 'Reinforced concrete (1:2:4) in frame', rate: 80000 },
+
+  // --- walling ------------------------------------------------------------
+  { test: /partition/i, unit: 'm²', section: 'Superstructure', desc: '150mm sandcrete block partition wall', rate: 5200 },
+  // Walls taken off as a run are priced over an assumed 3.0m storey height.
+  { test: /partition/i, unit: 'm', section: 'Superstructure', desc: '150mm block partition wall (3.0m storey height)', rate: 15600 },
+  { test: /boundary/i, unit: 'm²', section: 'External Works', desc: 'Blockwork boundary wall, 225mm', rate: 7200 },
+  // Boundary walls are typically 2.4m high.
+  { test: /boundary/i, unit: 'm', section: 'External Works', desc: 'Blockwork boundary wall, 225mm (2.4m high)', rate: 17280 },
+  { test: /external wall|wall run|wall face|blockwork|wall/i, unit: 'm²', section: 'Superstructure', desc: '225mm sandcrete block wall', rate: 6800 },
+  { test: /external wall|wall run|wall/i, unit: 'm', section: 'Superstructure', desc: '225mm sandcrete block wall (3.0m storey height)', rate: 20400 },
+
+  // --- roofing ------------------------------------------------------------
+  { test: /roof covering|roof/i, unit: 'm²', section: 'Roofing', desc: 'Aluminium roofing sheet 0.55mm on timber', rate: 9200 },
+  { test: /ridge|hip/i, unit: 'm', section: 'Roofing', desc: 'Ridge and hip capping', rate: 4200 },
+  { test: /fascia|soffit/i, unit: 'm', section: 'Roofing', desc: 'PVC fascia and soffit board', rate: 4200 },
+  { test: /ceiling/i, unit: 'm²', section: 'Finishes', desc: 'PVC ceiling panels on noggins', rate: 4600 },
+
+  // --- finishes -----------------------------------------------------------
+  { test: /floor finish|tiling|tile/i, unit: 'm²', section: 'Finishes', desc: 'Vitrified floor tiles 600x600mm', rate: 11500 },
+  { test: /plaster|render/i, unit: 'm²', section: 'Finishes', desc: '12mm cement & sand plaster to walls', rate: 2400 },
+  { test: /paint/i, unit: 'm²', section: 'Finishes', desc: 'Emulsion paint to walls, three coats', rate: 1450 },
+  { test: /skirting/i, unit: 'm', section: 'Finishes', desc: 'Tiled skirting', rate: 1900 },
+
+  // --- openings -----------------------------------------------------------
+  { test: /window/i, unit: 'm²', section: 'Doors & Windows', desc: 'Aluminium sliding windows with glazing', rate: 38000 },
+  // A typical residential window is 1.2 x 1.5m = 1.8 m2.
+  { test: /window/i, unit: 'no', section: 'Doors & Windows', desc: 'Aluminium sliding window (1.2 x 1.5m)', rate: 68400 },
+  { test: /door/i, unit: 'no', section: 'Doors & Windows', desc: 'Flush doors with hardwood frame', rate: 65000 },
+  { test: /glazed|screen|curtain wall/i, unit: 'm²', section: 'Doors & Windows', desc: 'Aluminium glazed screen', rate: 62000 },
+
+  // --- services -----------------------------------------------------------
+  { test: /socket/i, unit: 'no', section: 'Services', desc: '13A switched socket outlet', rate: 3200 },
+  { test: /lighting|light point|light/i, unit: 'no', section: 'Services', desc: 'LED panel light 18W', rate: 4800 },
+  { test: /distribution board/i, unit: 'no', section: 'Services', desc: '6-way distribution board', rate: 28000 },
+  { test: /cable|conduit/i, unit: 'm', section: 'Services', desc: '2.5mm² single core cable in conduit', rate: 520 },
+  { test: /soil pipe|waste pipe/i, unit: 'm', section: 'Services', desc: 'PVC soil pipe 4" including fittings', rate: 4800 },
+  { test: /water pipe|supply pipe/i, unit: 'm', section: 'Services', desc: 'PPR water pipe 20mm including fittings', rate: 2600 },
+  { test: /sanitary|closet|basin/i, unit: 'no', section: 'Services', desc: 'Sanitary fittings, supply and install', rate: 68000 },
+
+  // --- external works -----------------------------------------------------
+  { test: /paved|paving|driveway/i, unit: 'm²', section: 'External Works', desc: 'Interlocking paving to driveway', rate: 5200 },
+  { test: /landscap|turf/i, unit: 'm²', section: 'External Works', desc: 'Landscaping and turfing', rate: 3200 },
+  { test: /soakaway/i, unit: 'no', section: 'External Works', desc: 'Soakaway pit with concrete rings', rate: 145000 },
 ]
 
-// Fallback rates when nothing matches, so a custom measurement still prices.
+// Used when nothing matches, so a custom measurement still prices in its own
+// unit rather than borrowing a rate of the wrong dimension.
 const FALLBACK_RATE = { 'm²': 6800, m: 4200, 'm³': 52000, no: 25000 }
 
 /** Pull the leading number out of a value string like "186.4 m²". */
@@ -157,7 +202,9 @@ export function measurementsToBoqItems(measurements = []) {
       continue
     }
     const unit = UNIT_FOR_TYPE[m.type] || 'no'
-    const rule = BOQ_RULES.find((r) => r.test.test(m.name))
+    // Keyword AND unit must agree - a rate quoted per square metre must never
+    // be applied to a length, nor a per-cubic-metre rate to a count.
+    const rule = BOQ_RULES.find((r) => r.unit === unit && r.test.test(m.name))
     items.push({
       desc: rule ? rule.desc : m.name,
       section: rule ? rule.section : 'Superstructure',

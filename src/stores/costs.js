@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { normalizeUnit } from '@/utils/units'
 
 // ---------------------------------------------------------------------------
 // Cost data the user supplies themselves.
@@ -88,7 +89,8 @@ export function parseCostCsv(text) {
 
     rows.push({
       item,
-      unit: (cells[cols.unit] || 'no').trim() || 'no',
+      // Imported files use every spelling under the sun; store one.
+      unit: normalizeUnit(cells[cols.unit]) || 'no',
       rate,
       qty: cols.qty !== undefined ? toNumber(cells[cols.qty]) : 0,
       section: cols.section !== undefined ? (cells[cols.section] || '').trim() : '',
@@ -146,6 +148,7 @@ export const useCostsStore = defineStore('costs', {
       if (!line) return
       if (patch.rate != null) patch.rate = Math.max(0, Number(patch.rate) || 0)
       if (patch.qty != null) patch.qty = Math.max(0, Number(patch.qty) || 0)
+      if (patch.unit != null) patch.unit = normalizeUnit(patch.unit)
       Object.assign(line, patch)
       this._persist()
     },

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { normalizeUnit } from '@/utils/units'
 
 // ---------------------------------------------------------------------------
 // Vendor Marketplace store
@@ -371,7 +372,7 @@ export const useVendorsStore = defineStore('vendors', {
         description: String(data.description || '').trim(),
         products: (data.products || [])
           .filter((p) => String(p.name || '').trim())
-          .map((p) => ({ name: String(p.name).trim(), unit: String(p.unit).trim(), price: Number(p.price) })),
+          .map((p) => ({ name: String(p.name).trim(), unit: normalizeUnit(p.unit), price: Number(p.price) })),
         // New listings start unrated and unverified — nothing is faked.
         rating: 0,
         reviews: 0,
@@ -413,7 +414,7 @@ export const useVendorsStore = defineStore('vendors', {
         description: String(data.description || '').trim(),
         products: (data.products || [])
           .filter((p) => String(p.name || '').trim())
-          .map((p) => ({ name: String(p.name).trim(), unit: String(p.unit).trim(), price: Number(p.price) })),
+          .map((p) => ({ name: String(p.name).trim(), unit: normalizeUnit(p.unit), price: Number(p.price) })),
       })
       this._persistOwn()
       return { ok: true, vendor: listing }
@@ -439,7 +440,7 @@ export const useVendorsStore = defineStore('vendors', {
         id: vendor.id + ':' + product.name,
         vendor: vendor.name,
         item: product.name,
-        unit: product.unit,
+        unit: normalizeUnit(product.unit),
         rate: product.price,
         category: vendor.category,
         savedAt: new Date().toISOString(),

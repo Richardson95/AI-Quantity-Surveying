@@ -9,6 +9,7 @@ import {
 import { useVendorsStore, LISTING_FEE } from '@/stores/vendors'
 import { useToast } from '@/composables/useToast'
 import { formatFull } from '@/utils/format'
+import { normalizeUnit, COMMON_UNITS } from '@/utils/units'
 
 const store = useVendorsStore()
 const { toast } = useToast()
@@ -210,6 +211,9 @@ function savePrice(vendor, product) {
 
 <template>
   <div>
+    <datalist id="unit-options">
+      <option v-for="u in COMMON_UNITS" :key="u" :value="u" />
+    </datalist>
     <div class="space-y-6">
       <!-- Header -->
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -604,7 +608,8 @@ function savePrice(vendor, product) {
               <div class="space-y-2">
                 <div v-for="(p, i) in listing.products" :key="i" class="flex flex-col gap-2 rounded-xl border border-brand-border-light p-3 sm:flex-row sm:items-center">
                   <input v-model="p.name" class="input flex-1" placeholder="Product name" />
-                  <input v-model="p.unit" class="input sm:w-24" placeholder="Unit" />
+                  <input v-model="p.unit" list="unit-options" class="input sm:w-24" placeholder="Unit"
+                    @change="p.unit = normalizeUnit(p.unit)" />
                   <input v-model.number="p.price" type="number" min="0" class="input sm:w-36" placeholder="Price ₦" />
                   <button type="button" class="grid h-10 w-10 shrink-0 place-items-center self-end rounded-lg text-brand-light hover:bg-danger/10 hover:text-danger sm:self-auto" title="Remove product" @click="removeProductRow(i)">
                     <Trash2 class="h-4 w-4" />

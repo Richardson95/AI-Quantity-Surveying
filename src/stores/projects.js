@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { normalizeUnit } from '@/utils/units'
 
 export const useProjectsStore = defineStore('projects', {
   state: () => ({
@@ -160,6 +161,8 @@ export const useProjectsStore = defineStore('projects', {
       if (!item) return
       if (patch.qty != null) patch.qty = Math.max(0, Number(patch.qty) || 0)
       if (patch.rate != null) patch.rate = Math.max(0, Number(patch.rate) || 0)
+      // "m2", "SQM" and "nr" all mean something specific — store them as one.
+      if (patch.unit != null) patch.unit = normalizeUnit(patch.unit)
       Object.assign(item, patch)
     },
     removeBoqItem(item) {

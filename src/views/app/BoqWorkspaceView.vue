@@ -8,6 +8,7 @@ import { useProjectsStore } from '@/stores/projects'
 import { useDocumentsStore } from '@/stores/documents'
 import { generateBoq, reviewBoq } from '@/utils/boqGenerator'
 import { useToast } from '@/composables/useToast'
+import { normalizeUnit, COMMON_UNITS, unitsCompatible, dimensionOf } from '@/utils/units'
 import { downloadMock } from '@/utils/download'
 import { formatFull } from '@/utils/format'
 import FileDropzone from '@/components/FileDropzone.vue'
@@ -135,7 +136,7 @@ function addItem() {
   const item = store.addBoqItem(draft.value.section)
   store.updateBoqItem(item.id, {
     desc,
-    unit: draft.value.unit.trim(),
+    unit: normalizeUnit(draft.value.unit),
     qty: Number(draft.value.qty),
     rate: Number(draft.value.rate),
   })
@@ -150,6 +151,17 @@ function editItem(item) {
   editingId.value = editingId.value === item.id ? null : item.id
 }
 function commitEdit(item, field, value) {
+  // The rate is quoted per the item's current unit. Switching m² to m without
+  // changing the rate silently mis-prices the line, so say so.
+  if (field === 'unit') {
+    const next = normalizeUnit(value)
+    if (next && item.rate > 0 && !unitsCompatible(item.unit, next)) {
+      toast(
+        `${item.code}: rate is per ${item.unit} (${dimensionOf(item.unit)}) — check it still applies per ${next}`,
+        'warning'
+      )
+    }
+  }
   store.updateBoqItem(item.id, { [field]: value })
 }
 function finishEdit() {
@@ -170,6 +182,9 @@ function confidenceColor(c) {
 
 <template>
   <div class="space-y-6">
+    <datalist id="unit-options">
+      <option v-for="u in COMMON_UNITS" :key="u" :value="u" />
+    </datalist>
     <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">BOQ Workspace</h2>
@@ -421,7 +436,8 @@ function confidenceColor(c) {
               </div>
               <div>
                 <label class="label">Unit</label>
-                <input v-model="draft.unit" class="input" placeholder="m², m³, no, tonne…" />
+                <input v-model="draft.unit" list="unit-options" class="input" placeholder="m², m³, no, tonne…"
+                  @change="draft.unit = normalizeUnit(draft.unit)" />
               </div>
               <div>
                 <label class="label">Quantity</label>
