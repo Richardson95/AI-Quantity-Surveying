@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useSubscriptionStore } from '@/stores/subscription'
 
 const routes = [
   // ---------- Marketing ----------
@@ -57,7 +58,8 @@ const routes = [
       { path: 'reports', name: 'reports', component: () => import('@/views/app/ReportsView.vue') },
       { path: 'assistant', name: 'assistant', component: () => import('@/views/app/AssistantView.vue') },
       { path: 'team', name: 'team', component: () => import('@/views/app/TeamView.vue') },
-      { path: 'billing', name: 'billing', component: () => import('@/views/app/BillingView.vue') },
+      // Reachable even when the trial has lapsed — it is where you subscribe.
+      { path: 'billing', name: 'billing', meta: { allowExpired: true }, component: () => import('@/views/app/BillingView.vue') },
       { path: 'settings', name: 'settings', component: () => import('@/views/app/SettingsView.vue') },
     ],
   },
@@ -85,6 +87,18 @@ router.beforeEach((to) => {
   if (to.matched.some((r) => r.meta.guestOnly) && auth.isAuthenticated) {
     return { name: 'dashboard' }
   }
+
+  // Once the 14-day trial elapses the workspace locks and only billing stays
+  // open, so subscribing is the only way forward.
+  if (to.matched.some((r) => r.meta.requiresAuth)) {
+    const subscription = useSubscriptionStore()
+    subscription.refresh()
+    const allowed = to.matched.some((r) => r.meta.allowExpired)
+    if (!subscription.hasAccess && !allowed) {
+      return { name: 'billing', query: { locked: '1' } }
+    }
+  }
+
   return true
 })
 

@@ -351,7 +351,7 @@ export const useVendorsStore = defineStore('vendors', {
       return errors
     },
 
-    registerVendor(data, { feePaid = false } = {}) {
+    registerVendor(data, { feePaid = false, reference = null } = {}) {
       const errors = this.validateListing(data)
       if (errors.length) return { ok: false, errors }
       // Publishing is a paid action; refuse rather than quietly listing free.
@@ -382,7 +382,7 @@ export const useVendorsStore = defineStore('vendors', {
         createdAt: new Date().toISOString(),
         listingFee: LISTING_FEE,
         feePaidAt: new Date().toISOString(),
-        receiptId: 'RCP-' + Date.now().toString(36).toUpperCase(),
+        receiptId: reference || 'RCP-' + Date.now().toString(36).toUpperCase(),
       }
 
       this.vendors.unshift(listing)

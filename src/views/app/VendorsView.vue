@@ -10,9 +10,13 @@ import { useVendorsStore, LISTING_FEE } from '@/stores/vendors'
 import { useToast } from '@/composables/useToast'
 import { formatFull } from '@/utils/format'
 import { normalizeUnit, COMMON_UNITS } from '@/utils/units'
+import { useAuthStore } from '@/stores/auth'
+import { pay, isConfigured } from '@/utils/paystack'
 
 const store = useVendorsStore()
+const auth = useAuthStore()
 const { toast } = useToast()
+const processing = ref(false)
 
 // Map the icon names stored in the categories data → real components.
 const icons = { Home, Package, Boxes, Hammer, Wrench, Grid3x3, Droplets, Zap, Paintbrush, Mountain }
@@ -112,8 +116,28 @@ function submitListing() {
   listingPayOpen.value = true
 }
 
-function confirmListingPayment() {
-  const res = store.registerVendor(listing.value, { feePaid: true })
+async function confirmListingPayment() {
+  if (processing.value) return
+  if (!isConfigured()) {
+    toast('Payments are not configured yet — add your Paystack public key.', 'warning')
+    return
+  }
+
+  processing.value = true
+  const payment = await pay({
+    email: listing.value.email || auth.user.email,
+    amountNaira: LISTING_FEE,
+    purpose: 'LISTING',
+    metadata: { business: listing.value.name, category: listing.value.category },
+  })
+  processing.value = false
+
+  if (!payment.ok) {
+    if (!payment.cancelled) toast(payment.error, 'warning')
+    return
+  }
+
+  const res = store.registerVendor(listing.value, { feePaid: true, reference: payment.reference })
   if (!res.ok) {
     formErrors.value = res.errors
     listingPayOpen.value = false
@@ -194,10 +218,32 @@ function startPayment(v) {
   payingFor.value = v
   paid.value = false
 }
-function confirmPayment() {
-  store.unlock(payingFor.value.id)
+async function confirmPayment() {
+  if (processing.value) return
+  const vendor = payingFor.value
+  if (!isConfigured()) {
+    toast('Payments are not configured yet — add your Paystack public key.', 'warning')
+    return
+  }
+
+  processing.value = true
+  const result = await pay({
+    email: auth.user.email,
+    amountNaira: vendor.unlockPrice,
+    purpose: 'UNLOCK',
+    metadata: { vendorId: vendor.id, vendor: vendor.name },
+  })
+  processing.value = false
+
+  if (!result.ok) {
+    if (!result.cancelled) toast(result.error, 'warning')
+    return
+  }
+
+  // Reached only after the reference was verified server-side.
+  store.unlock(vendor.id)
   paid.value = true
-  toast(`Contacts unlocked for ${payingFor.value.name}`)
+  toast(`Contacts unlocked for ${vendor.name}`)
 }
 function closePayment() {
   payingFor.value = null
@@ -519,10 +565,11 @@ function savePrice(vendor, product) {
                 <span class="font-display text-xl font-bold text-secondary">{{ formatFull(payingFor.unlockPrice) }}</span>
               </div>
 
-              <button class="btn-primary btn-md w-full" @click="confirmPayment">
-                <CreditCard class="h-4 w-4" /> Pay {{ formatFull(payingFor.unlockPrice) }} & unlock
+              <button class="btn-primary btn-md w-full" :disabled="processing" @click="confirmPayment">
+                <CreditCard class="h-4 w-4" />
+                {{ processing ? 'Opening Paystack…' : `Pay ${formatFull(payingFor.unlockPrice)} & unlock` }}
               </button>
-              <p class="text-center text-xs text-brand-light">Mock payment for demo — no real charge is made.</p>
+              <p class="text-center text-xs text-brand-light">Secure payment by Paystack.</p>
             </div>
           </div>
         </div>
@@ -685,11 +732,12 @@ function savePrice(vendor, product) {
               <span class="font-display text-xl font-bold text-secondary">{{ formatFull(LISTING_FEE) }}</span>
             </div>
 
-            <button class="btn-primary btn-md w-full" @click="confirmListingPayment">
-              <CreditCard class="h-4 w-4" /> Pay {{ formatFull(LISTING_FEE) }} &amp; publish
+            <button class="btn-primary btn-md w-full" :disabled="processing" @click="confirmListingPayment">
+              <CreditCard class="h-4 w-4" />
+              {{ processing ? 'Opening Paystack…' : `Pay ${formatFull(LISTING_FEE)} & publish` }}
             </button>
             <button class="btn-outline btn-md w-full" @click="closeListingPayment">Back to my details</button>
-            <p class="text-center text-xs text-brand-light">Mock payment for demo — no real charge is made.</p>
+            <p class="text-center text-xs text-brand-light">Secure payment by Paystack.</p>
           </div>
         </div>
       </div>

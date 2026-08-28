@@ -9,11 +9,28 @@ import {
 import BrandLogo from '@/components/BrandLogo.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProjectsStore } from '@/stores/projects'
+import { useSubscriptionStore, TRIAL_DAYS } from '@/stores/subscription'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const projects = useProjectsStore()
+const subscription = useSubscriptionStore()
+
+// Colour the countdown by how close the trial is to running out.
+const trialBanner = computed(() => {
+  if (!subscription.isTrialing) return null
+  const d = subscription.trialDaysLeft
+  const tone = {
+    calm: 'bg-primary/10 text-primary-dark border-primary/20',
+    warning: 'bg-warning/10 text-warning border-warning/30',
+    critical: 'bg-danger/10 text-danger border-danger/30',
+  }[subscription.trialUrgency] || 'bg-primary/10 text-primary-dark border-primary/20'
+  return {
+    tone,
+    text: d === 1 ? 'Last day of your free trial' : `${d} days left in your free trial`,
+  }
+})
 const sidebarOpen = ref(false)
 const userMenu = ref(false)
 const notifMenu = ref(false)
@@ -196,18 +213,36 @@ function logout() {
         </nav>
       </div>
 
-      <!-- Plan card -->
+      <!-- Plan / trial card -->
       <div class="m-3 rounded-2xl bg-navy-gradient p-4 text-white">
         <div class="flex items-center gap-2">
           <Sparkles class="h-4 w-4 text-primary-light" />
-          <span class="text-sm font-semibold">{{ auth.user.plan }} Plan</span>
+          <span class="text-sm font-semibold">
+            {{ subscription.status === 'active' ? subscription.plan + ' Plan' : 'Free Trial' }}
+          </span>
         </div>
-        <p class="mt-1 text-xs text-white/60">AI credits: 1,240 / 2,000 used this month</p>
-        <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-white/15">
-          <div class="h-full rounded-full bg-primary-light" style="width: 62%"></div>
-        </div>
+
+        <template v-if="subscription.isTrialing">
+          <p class="mt-1 text-xs text-white/60">
+            {{ subscription.trialDaysLeft }} of {{ TRIAL_DAYS }} days remaining
+          </p>
+          <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-white/15">
+            <div class="h-full rounded-full transition-all"
+              :class="subscription.trialUrgency === 'critical' ? 'bg-danger' : 'bg-primary-light'"
+              :style="{ width: (subscription.trialDaysLeft / TRIAL_DAYS) * 100 + '%' }"></div>
+          </div>
+        </template>
+        <template v-else-if="subscription.status === 'active'">
+          <p class="mt-1 text-xs text-white/60">
+            Renews {{ subscription.renewsOn ? subscription.renewsOn.toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' }) : '—' }}
+          </p>
+        </template>
+        <template v-else>
+          <p class="mt-1 text-xs text-danger">Your trial has ended</p>
+        </template>
+
         <RouterLink to="/app/billing" class="mt-3 block text-center text-xs font-semibold text-primary-light hover:underline">
-          Upgrade plan →
+          {{ subscription.status === 'active' ? 'Manage plan →' : 'Subscribe now →' }}
         </RouterLink>
       </div>
     </aside>
@@ -297,6 +332,18 @@ function logout() {
         </div>
         </div>
       </header>
+
+      <!-- Trial countdown -->
+      <RouterLink
+        v-if="trialBanner"
+        to="/app/billing"
+        class="flex items-center justify-center gap-2 border-b px-4 py-2.5 text-sm font-medium transition-colors hover:brightness-95"
+        :class="trialBanner.tone"
+      >
+        <Sparkles class="h-4 w-4 shrink-0" />
+        <span>{{ trialBanner.text }}</span>
+        <span class="font-bold underline">Subscribe now</span>
+      </RouterLink>
 
       <!-- Page content -->
       <main class="flex-1 overflow-x-clip p-4 sm:p-6 lg:p-8">

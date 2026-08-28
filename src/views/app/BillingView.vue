@@ -1,21 +1,28 @@
 <script setup>
-import { ref, computed } from 'vue'
-import { Check, Sparkles, CreditCard, Download, Zap, X, ArrowRight } from 'lucide-vue-next'
+import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { Check, Sparkles, CreditCard, Download, Zap, X, Lock, ShieldCheck } from 'lucide-vue-next'
+import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { downloadMock } from '@/utils/download'
+import { useSubscriptionStore, PLANS, TRIAL_DAYS } from '@/stores/subscription'
+import { pay, isConfigured } from '@/utils/paystack'
+import { formatFull } from '@/utils/format'
 
 const auth = useAuthStore()
 const { toast } = useToast()
+const route = useRoute()
+const subscription = useSubscriptionStore()
 
-// Plans mirror the public pricing page so the two never disagree.
-const plans = [
-  { name: 'Starter', price: 18000, blurb: 'Freelance surveyors', seats: 2, credits: 500, storage: 10 },
-  { name: 'Professional', price: 54000, blurb: 'Construction companies', seats: 10, credits: 2000, storage: 100 },
-  { name: 'Enterprise', price: null, blurb: 'Large firms & government', seats: 'Unlimited', credits: 'Unlimited', storage: 1000 },
-]
+// Set when the router bounced someone here because their trial ran out.
+const locked = computed(() => route.query.locked === '1' || !subscription.hasAccess)
+const paying = ref('')
 
-const currentPlan = computed(() => plans.find((p) => p.name === auth.user.plan) || plans[1])
+onMounted(() => subscription.refresh())
+
+const plans = PLANS
+const currentPlan = computed(() => subscription.currentPlan || PLANS[1])
 
 const planOpen = ref(false)
 const cardOpen = ref(false)
@@ -31,27 +38,47 @@ function upgrade() {
   planOpen.value = true
 }
 
-function choosePlan(plan) {
-  if (plan.name === auth.user.plan) {
-    toast(`You are already on ${plan.name}`, 'info')
-    return
-  }
+async function choosePlan(plan) {
   if (plan.price === null) {
     planOpen.value = false
     toast('Our sales team will contact you about Enterprise', 'info')
     return
   }
-  const previous = auth.user.plan
+  if (subscription.status === 'active' && plan.name === subscription.plan) {
+    toast(`You are already on ${plan.name}`, 'info')
+    return
+  }
+  if (!isConfigured()) {
+    toast('Payments are not configured yet — add your Paystack public key.', 'warning')
+    return
+  }
+  if (paying.value) return
+
+  paying.value = plan.name
+  const result = await pay({
+    email: auth.user.email,
+    amountNaira: plan.price,
+    purpose: 'SUB',
+    metadata: { plan: plan.name, company: auth.user.company },
+  })
+  paying.value = ''
+
+  if (!result.ok) {
+    if (!result.cancelled) toast(result.error, 'warning')
+    return
+  }
+
+  // Only reached once the reference has been verified server-side.
+  subscription.activate({ plan: plan.name, reference: result.reference, amount: plan.price })
   auth.updateProfile({ plan: plan.name })
   planOpen.value = false
-  const direction = plans.indexOf(plan) > plans.findIndex((p) => p.name === previous) ? 'Upgraded' : 'Switched'
-  toast(`${direction} to ${plan.name} — ₦${plan.price.toLocaleString()}/month`)
+  toast(`${plan.name} active — thank you. Renews ${subscription.renewsOn.toLocaleDateString('en-NG')}.`)
 }
 
 function updateCard() {
-  card.value = { number: '', name: auth.user.name, expiry: '', cvc: '' }
-  cardError.value = ''
-  cardOpen.value = true
+  // Card details are entered inside Paystack's own secure popup, never here.
+  planOpen.value = true
+  toast('Choose a plan to pay with — your card is entered securely on Paystack', 'info')
 }
 
 function saveCard() {
@@ -85,12 +112,23 @@ const usage = computed(() => [
   { label: 'Team Seats', used: 5, total: currentPlan.value.seats, unit: '' },
 ])
 
-const invoices = [
+const paidInvoices = computed(() =>
+  subscription.payments.map((p) => ({
+    id: p.id,
+    date: new Date(p.paidAt).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' }),
+    amount: p.amount,
+    status: 'Paid',
+  }))
+)
+
+const sampleInvoices = [
   { id: 'INV-2026-006', date: 'Jun 1, 2026', amount: 54000, status: 'Paid' },
   { id: 'INV-2026-005', date: 'May 1, 2026', amount: 54000, status: 'Paid' },
   { id: 'INV-2026-004', date: 'Apr 1, 2026', amount: 54000, status: 'Paid' },
   { id: 'INV-2026-003', date: 'Mar 1, 2026', amount: 54000, status: 'Paid' },
 ]
+
+const invoices = computed(() => (paidInvoices.value.length ? paidInvoices.value : sampleInvoices))
 
 function pct(u, t) {
   return typeof t === 'number' ? Math.round((u / t) * 100) : 0
@@ -99,10 +137,73 @@ function pct(u, t) {
 
 <template>
   <div>
-    <div class="space-y-6">
+    <!-- Trial over: subscribing is the only way back in -->
+    <div v-if="locked" class="space-y-6">
+      <div class="relative overflow-hidden rounded-2xl bg-navy-gradient p-6 text-center sm:p-10">
+        <div class="absolute inset-0 bg-hero-glow"></div>
+        <div class="relative mx-auto max-w-xl">
+          <div class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-white/10 text-primary-light">
+            <Lock class="h-7 w-7" />
+          </div>
+          <h2 class="mt-5 font-display text-3xl font-extrabold text-white">Your free trial has ended</h2>
+          <p class="mt-3 text-white/70">
+            Your {{ TRIAL_DAYS }}-day trial of BuildQ AI is over. Choose a plan to get straight back to your
+            projects, BOQs and estimates — everything is exactly where you left it.
+          </p>
+          <p class="mt-4 inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm text-white/80">
+            <ShieldCheck class="h-4 w-4 shrink-0 text-primary-light" /> Secure payment by Paystack · cancel anytime
+          </p>
+        </div>
+      </div>
+
+      <div class="grid gap-5 lg:grid-cols-3">
+        <div v-for="p in plans" :key="p.name" class="card flex flex-col p-6"
+          :class="p.name === 'Professional' ? 'ring-2 ring-primary lg:-mt-2' : ''">
+          <span v-if="p.name === 'Professional'" class="badge mb-3 self-start bg-brand-gradient text-white">
+            <Sparkles class="h-3 w-3" /> Most popular
+          </span>
+          <h3 class="font-display text-lg font-bold text-secondary">{{ p.name }}</h3>
+          <p class="text-sm text-brand-muted">{{ p.blurb }}</p>
+          <p class="mt-4 font-display text-3xl font-extrabold text-secondary">
+            {{ p.price === null ? 'Custom' : formatFull(p.price) }}
+            <span v-if="p.price !== null" class="text-sm font-medium text-brand-light">/mo</span>
+          </p>
+          <ul class="mt-5 flex-1 space-y-2.5 text-sm text-brand-muted">
+            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.credits }} AI credits / month</li>
+            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.seats }} team seats</li>
+            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.storage }} GB storage</li>
+            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> Unlimited projects &amp; BOQs</li>
+          </ul>
+          <button class="btn-primary btn-md mt-6" :disabled="paying === p.name" @click="choosePlan(p)">
+            <CreditCard class="h-4 w-4" />
+            {{ paying === p.name ? 'Opening Paystack…' : p.price === null ? 'Contact sales' : `Pay ${formatFull(p.price)}` }}
+          </button>
+        </div>
+      </div>
+
+      <p class="text-center text-sm text-brand-muted">
+        Need help choosing? <RouterLink to="/contact" class="font-semibold text-primary hover:underline">Talk to us</RouterLink>.
+      </p>
+    </div>
+
+    <div v-else class="space-y-6">
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">Billing & Subscription</h2>
         <p class="mt-1 text-brand-muted">Manage your plan, usage and invoices</p>
+      </div>
+
+      <!-- Trial countdown -->
+      <div v-if="subscription.isTrialing" class="card flex flex-wrap items-center gap-4 border-l-4 border-l-primary p-5">
+        <div class="min-w-0 flex-1">
+          <p class="font-semibold text-secondary">
+            {{ subscription.trialDaysLeft }} {{ subscription.trialDaysLeft === 1 ? 'day' : 'days' }} left in your free trial
+          </p>
+          <p class="mt-0.5 text-sm text-brand-muted">
+            Ends {{ subscription.trialEndsAt.toLocaleDateString('en-NG', { day: 'numeric', month: 'long', year: 'numeric' }) }}.
+            Subscribe before then to keep working without interruption.
+          </p>
+        </div>
+        <button class="btn-primary btn-md" @click="planOpen = true"><CreditCard class="h-4 w-4" /> Subscribe</button>
       </div>
 
       <!-- Current plan -->
@@ -110,10 +211,20 @@ function pct(u, t) {
         <div class="absolute inset-0 bg-hero-glow"></div>
         <div class="relative flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <span class="badge bg-white/10 text-primary-light"><Sparkles class="h-3 w-3" /> Current plan</span>
-            <h3 class="mt-3 font-display text-3xl font-extrabold text-white">{{ auth.user.plan }}</h3>
+            <span class="badge bg-white/10 text-primary-light">
+              <Sparkles class="h-3 w-3" /> {{ subscription.status === 'active' ? 'Current plan' : 'Free trial' }}
+            </span>
+            <h3 class="mt-3 font-display text-3xl font-extrabold text-white">
+              {{ subscription.status === 'active' ? subscription.plan : 'Trial' }}
+            </h3>
             <p class="mt-1 text-white/60">
-              <template v-if="currentPlan.price">₦{{ currentPlan.price.toLocaleString() }} / month · renews Jul 1, 2026</template>
+              <template v-if="subscription.status === 'active' && currentPlan.price">
+                {{ formatFull(currentPlan.price) }} / month · renews
+                {{ subscription.renewsOn.toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' }) }}
+              </template>
+              <template v-else-if="subscription.isTrialing">
+                No card required · {{ subscription.trialDaysLeft }} of {{ TRIAL_DAYS }} days remaining
+              </template>
               <template v-else>Custom pricing · managed by your success manager</template>
             </p>
           </div>
@@ -144,14 +255,16 @@ function pct(u, t) {
           <h3 class="font-display font-bold text-secondary">Payment Method</h3>
           <div class="mt-4 rounded-xl border border-brand-border-light p-4">
             <div class="flex items-center gap-3">
-              <div class="grid h-10 w-14 place-items-center rounded-lg bg-secondary text-white"><CreditCard class="h-5 w-5" /></div>
-              <div>
-                <p class="font-semibold text-secondary">•••• •••• •••• {{ cardOnFile.last4 }}</p>
-                <p class="text-xs text-brand-light">Expires {{ cardOnFile.expiry }}</p>
+              <div class="grid h-10 w-14 place-items-center rounded-lg bg-secondary text-white"><ShieldCheck class="h-5 w-5" /></div>
+              <div class="min-w-0">
+                <p class="font-semibold text-secondary">Paystack</p>
+                <p class="text-xs text-brand-light">Card details are entered on Paystack, never stored here</p>
               </div>
             </div>
           </div>
-          <button class="btn-outline btn-md mt-4 w-full" @click="updateCard">Update card</button>
+          <button class="btn-outline btn-md mt-4 w-full" @click="updateCard">
+            <CreditCard class="h-4 w-4" /> Change plan or card
+          </button>
         </div>
 
         <!-- Invoices -->
@@ -189,7 +302,7 @@ function pct(u, t) {
           </div>
           <div class="grid flex-1 gap-4 overflow-y-auto p-6 sm:grid-cols-3">
             <div v-for="p in plans" :key="p.name" class="card flex flex-col p-5"
-              :class="p.name === auth.user.plan ? 'ring-2 ring-primary' : ''">
+              :class="subscription.status === 'active' && p.name === subscription.plan ? 'ring-2 ring-primary' : ''">
               <h4 class="font-display font-bold text-secondary">{{ p.name }}</h4>
               <p class="text-xs text-brand-muted">{{ p.blurb }}</p>
               <p class="mt-3 font-display text-2xl font-extrabold text-secondary">
@@ -201,9 +314,13 @@ function pct(u, t) {
                 <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.seats }} team seats</li>
                 <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.storage }} GB storage</li>
               </ul>
-              <button class="btn-md mt-5" :class="p.name === auth.user.plan ? 'btn-outline' : 'btn-primary'" @click="choosePlan(p)">
-                {{ p.name === auth.user.plan ? 'Current plan' : p.price === null ? 'Contact sales' : 'Switch' }}
-                <ArrowRight v-if="p.name !== auth.user.plan" class="h-4 w-4" />
+              <button class="btn-md mt-5" :disabled="paying === p.name"
+                :class="subscription.status === 'active' && p.name === subscription.plan ? 'btn-outline' : 'btn-primary'"
+                @click="choosePlan(p)">
+                <template v-if="paying === p.name">Opening Paystack…</template>
+                <template v-else-if="subscription.status === 'active' && p.name === subscription.plan">Current plan</template>
+                <template v-else-if="p.price === null">Contact sales</template>
+                <template v-else><CreditCard class="h-4 w-4" /> Pay {{ formatFull(p.price) }}</template>
               </button>
             </div>
           </div>
