@@ -1,20 +1,17 @@
 import { defineStore } from 'pinia'
+import { api, ApiError } from '@/services/api'
 
 // ---------------------------------------------------------------------------
 // Uploaded drawings, plans and project documents.
 // ---------------------------------------------------------------------------
-// Files are read in the browser (no backend yet). Metadata always persists;
-// the file body is only persisted when it is small enough to sit comfortably
-// in localStorage, so a big DWG still works for the session but does not blow
-// the storage quota. Anything without a stored body still downloads a
-// generated placeholder rather than failing silently.
+// Files go to the server, which stores them under authenticated
+// delivery and queues an analysis job for the formats the engine can actually
+// read. Downloads and previews come back as short-lived signed URLs, so nothing
+// is ever served from a permanent public link.
+//
+// A document is a real stored file, not a browser blob: it survives a cleared
+// cache and is visible to the whole team.
 // ---------------------------------------------------------------------------
-
-const DOCS_KEY = 'buildq.documents'
-
-// Per-file cap for persisting the actual bytes, and an overall budget.
-const PERSIST_FILE_LIMIT = 1_200_000 // ~1.2 MB of base64
-const PERSIST_TOTAL_LIMIT = 3_500_000
 
 export const ACCEPTED_TYPES =
   '.pdf,.dwg,.dxf,.rvt,.ifc,.png,.jpg,.jpeg,.xlsx,.xls,.csv,.docx,.doc'
@@ -44,31 +41,17 @@ export function formatBytes(bytes) {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB'
 }
 
-function load() {
-  try {
-    const raw = localStorage.getItem(DOCS_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-
-// Read a File into a data URL so it can be previewed and re-downloaded.
-function readAsDataUrl(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = () => resolve(null)
-    reader.readAsDataURL(file)
-  })
-}
-
-let seq = Date.now()
-
 export const useDocumentsStore = defineStore('documents', {
   state: () => ({
-    docs: load(),
+    docs: [],
+    // Which scopes have been fetched, so a screen switch does not re-request.
+    loadedScopes: [],
+    loading: false,
+    error: null,
+    // jobId -> setTimeout handle, so polling can be cancelled on teardown.
+    watching: {},
   }),
+
   getters: {
     // `scope` is a project id, or 'library' for files not tied to a project.
     forScope: (s) => (scope) => s.docs.filter((d) => d.scope === scope),
@@ -76,8 +59,36 @@ export const useDocumentsStore = defineStore('documents', {
       s.docs.filter((d) => d.scope === scope && ['Drawing', 'CAD', 'BIM', 'Image'].includes(d.kind)),
     byId: (s) => (id) => s.docs.find((d) => d.id === id),
     totalFor: (s) => (scope) => s.docs.filter((d) => d.scope === scope).length,
+    analysing: (s) => s.docs.filter((d) => d.status === 'Analyzing').length,
   },
+
   actions: {
+    /** Loads one project's documents. Safe to call on every mount. */
+    async fetchForScope(scope, { force = false } = {}) {
+      if (!scope || scope === 'library') return this.forScope(scope)
+      if (this.loadedScopes.includes(scope) && !force) return this.forScope(scope)
+
+      this.loading = true
+      this.error = null
+      try {
+        const data = await api.get('/projects/' + scope + '/documents')
+        const incoming = (data.documents || []).map((d) => ({ ...d, scope }))
+        // Replace only this scope's rows, so another project's stay put.
+        this.docs = [...this.docs.filter((d) => d.scope !== scope), ...incoming]
+        if (!this.loadedScopes.includes(scope)) this.loadedScopes.push(scope)
+        // Anything still being read gets followed through to a result.
+        for (const d of incoming) {
+          if (d.status === 'Analyzing') this.watchDocument(d.id)
+        }
+        return this.forScope(scope)
+      } catch (err) {
+        this.error = err instanceof ApiError ? err.message : 'Could not load documents.'
+        throw err
+      } finally {
+        this.loading = false
+      }
+    },
+
     /**
      * Validate and store one browser File.
      * Returns { ok, doc, error } so the caller can report per-file problems.
@@ -97,89 +108,164 @@ export const useDocumentsStore = defineStore('documents', {
         return { ok: false, error: `${file.name} has already been uploaded here` }
       }
 
-      const dataUrl = file.size <= PERSIST_FILE_LIMIT ? await readAsDataUrl(file) : null
-
-      const doc = {
-        id: 'DOC-' + (++seq).toString(36).toUpperCase(),
-        name: file.name,
-        ext,
-        kind: kindOf(file.name),
-        size: file.size,
-        sizeLabel: formatBytes(file.size),
-        mime: file.type || 'application/octet-stream',
-        scope,
-        uploadedBy,
-        uploadedAt: new Date().toISOString(),
-        // Analysis is simulated; the flag is what the UI badges read from.
-        status: 'Analyzing',
-        dataUrl,
+      if (!scope || scope === 'library') {
+        return { ok: false, error: 'Choose a project before uploading.' }
       }
 
-      this.docs.unshift(doc)
-      this._persist()
-
-      // Mark it analyzed shortly after, the way the drawing viewer expects.
-      setTimeout(() => this.markAnalyzed(doc.id), 1600)
-
-      return { ok: true, doc }
+      try {
+        const res = await api.upload('/projects/' + scope + '/documents', file)
+        const doc = { ...res.document, scope }
+        this.docs.unshift(doc)
+        // The server says plainly when it cannot read a format, rather than
+        // guessing quantities from the file name.
+        if (res.analysisJobId) this.watchJob(res.analysisJobId, doc.id)
+        return { ok: true, doc, notice: res.notice || null, analysable: res.analysable }
+      } catch (err) {
+        return {
+          ok: false,
+          error:
+            err instanceof ApiError
+              ? `${file.name}: ${err.message}`
+              : `${file.name} could not be uploaded`,
+        }
+      }
     },
 
     async addFiles(fileList, opts = {}) {
       const added = []
       const errors = []
+      const notices = []
       for (const file of Array.from(fileList || [])) {
         const res = await this.addFile(file, opts)
-        if (res.ok) added.push(res.doc)
-        else errors.push(res.error)
+        if (res.ok) {
+          added.push(res.doc)
+          if (res.notice) notices.push(res.notice)
+        } else {
+          errors.push(res.error)
+        }
       }
-      return { added, errors }
+      return { added, errors, notices }
     },
 
-    markAnalyzed(id) {
-      const doc = this.docs.find((d) => d.id === id)
-      if (!doc) return
-      doc.status = 'Ready'
-      // Element counts are illustrative, but tied to the actual file so the
-      // number is at least stable per document instead of changing on render.
-      doc.elements = 8 + (doc.name.length % 14)
-      this._persist()
+    // --- Analysis job polling ---------------------------------------------
+    /**
+     * Follows one analysis job to a result. The worker runs server-side, so
+     * this only asks; it never decides that a drawing was understood.
+     */
+    watchJob(jobId, documentId, { attempt = 0 } = {}) {
+      if (this.watching[jobId]) return
+
+      const tick = async () => {
+        try {
+          const job = await api.get('/analyze/' + jobId)
+          if (job.status === 'succeeded' || job.status === 'failed') {
+            delete this.watching[jobId]
+            await this.refreshDocument(documentId)
+            return
+          }
+        } catch {
+          delete this.watching[jobId]
+          return
+        }
+        // Back off gently, and give up rather than polling a stuck job forever.
+        attempt += 1
+        if (attempt > 40) {
+          delete this.watching[jobId]
+          return
+        }
+        this.watching[jobId] = setTimeout(tick, Math.min(2000 + attempt * 500, 8000))
+      }
+
+      this.watching[jobId] = setTimeout(tick, 2000)
     },
 
-    rename(id, name) {
-      const doc = this.docs.find((d) => d.id === id)
-      if (!doc || !String(name).trim()) return
-      doc.name = String(name).trim()
-      doc.ext = extOf(doc.name)
-      doc.kind = kindOf(doc.name)
-      this._persist()
+    /** Watches whatever job is currently attached to a document. */
+    async watchDocument(documentId) {
+      try {
+        const data = await api.get('/documents/' + documentId)
+        if (data.analysis && ['queued', 'running'].includes(data.analysis.status)) {
+          this.watchJob(data.analysis.id, documentId)
+        } else {
+          this._merge(documentId, data.document)
+        }
+      } catch {
+        /* the document may have been deleted underneath us */
+      }
     },
 
-    remove(id) {
+    async refreshDocument(documentId) {
+      try {
+        const data = await api.get('/documents/' + documentId)
+        this._merge(documentId, data.document)
+        return data
+      } catch {
+        return null
+      }
+    },
+
+    /** Stops every outstanding poll. Screens call this on unmount. */
+    stopWatching() {
+      for (const id of Object.keys(this.watching)) clearTimeout(this.watching[id])
+      this.watching = {}
+    },
+
+    // --- Reading a stored file --------------------------------------------
+    /**
+     * A short-lived signed URL for the original bytes. Returns null when the
+     * server could not produce one.
+     */
+    async downloadUrl(doc) {
+      if (!doc) return null
+      try {
+        const data = await api.get('/documents/' + doc.id + '/download')
+        return data.url || null
+      } catch {
+        return null
+      }
+    },
+
+    /**
+     * A preview URL, or null with a reason. There is no server-side renderer
+     * for CAD and BIM formats, so this reports that rather than returning a
+     * link that would break.
+     */
+    async previewUrl(doc) {
+      if (!doc) return { url: null, notice: 'Nothing to preview.' }
+      try {
+        return await api.get('/documents/' + doc.id + '/preview')
+      } catch {
+        return { url: null, notice: 'That preview could not be produced.' }
+      }
+    },
+
+    async rename(id, name) {
+      const clean = String(name || '').trim()
+      if (!clean) return
+      const res = await api.patch('/documents/' + id, { name: clean })
+      this._merge(id, res.document)
+    },
+
+    async remove(id) {
+      try {
+        await api.del('/documents/' + id)
+      } catch {
+        /* already gone server-side — dropping it locally is still correct */
+      }
       this.docs = this.docs.filter((d) => d.id !== id)
-      this._persist()
     },
 
     clearScope(scope) {
       this.docs = this.docs.filter((d) => d.scope !== scope)
-      this._persist()
+      this.loadedScopes = this.loadedScopes.filter((s) => s !== scope)
     },
 
-    _persist() {
-      try {
-        // Keep bodies only while they fit the budget, newest first.
-        let budget = PERSIST_TOTAL_LIMIT
-        const slim = this.docs.map((d) => {
-          const body = d.dataUrl || ''
-          if (body && body.length <= budget) {
-            budget -= body.length
-            return d
-          }
-          return { ...d, dataUrl: null }
-        })
-        localStorage.setItem(DOCS_KEY, JSON.stringify(slim))
-      } catch {
-        /* quota or privacy mode — session-only is an acceptable fallback */
-      }
+    /** Replaces one row in place, keeping the scope the list is grouped by. */
+    _merge(id, incoming) {
+      if (!incoming) return
+      const i = this.docs.findIndex((d) => d.id === id)
+      if (i === -1) return
+      this.docs[i] = { ...incoming, scope: this.docs[i].scope }
     },
+
   },
 })

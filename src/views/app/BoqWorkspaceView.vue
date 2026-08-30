@@ -1,15 +1,14 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   Upload, Sparkles, Download, Search, Plus, FileSpreadsheet, Check,
   Pencil, Trash2, Cpu, Layers, X,
 } from 'lucide-vue-next'
 import { useProjectsStore } from '@/stores/projects'
 import { useDocumentsStore } from '@/stores/documents'
-import { buildBoq, hasAnalysisEngine, SOURCE_LABELS } from '@/services/analysis'
+import { buildBoq, SOURCE_LABELS } from '@/services/analysis'
 import { useToast } from '@/composables/useToast'
 import { normalizeUnit, COMMON_UNITS, unitsCompatible, dimensionOf } from '@/utils/units'
-import { downloadMock } from '@/utils/download'
 import { formatFull } from '@/utils/format'
 import FileDropzone from '@/components/FileDropzone.vue'
 import DocumentList from '@/components/DocumentList.vue'
@@ -22,12 +21,29 @@ const generating = ref(false)
 const activeSection = ref('All')
 const editingId = ref(null)
 
-// This workspace is scoped to one project, so its drawings live under that id.
-const PROJECT_ID = 'PRJ-1042'
+// This workspace is scoped to one project. Which one comes from the store —
+// with a backend that is whatever the user last opened, not a hard-coded id.
+const projectId = computed(() => store.currentProjectId)
 const dropzone = ref(null)
 const selectedDocId = ref('')
 
-const drawings = computed(() => documents.drawingsFor(PROJECT_ID))
+async function loadProject(id) {
+  if (!id) return
+  await Promise.all([
+    store.fetchBoq(id).catch((e) => toast(e.message, 'warning')),
+    documents.fetchForScope(id).catch(() => {}),
+  ])
+}
+
+onMounted(async () => {
+  await store.ensureProject()
+  await loadProject(projectId.value)
+})
+
+// Switching project reloads both halves of the screen.
+watch(projectId, (id) => loadProject(id))
+
+const drawings = computed(() => documents.drawingsFor(projectId.value))
 const activeDrawing = computed(
   () => drawings.value.find((d) => d.id === selectedDocId.value) || drawings.value[0] || null
 )
@@ -43,12 +59,16 @@ const filtered = computed(() =>
 const total = computed(() => filtered.value.reduce((a, i) => a + i.qty * i.rate, 0))
 
 // Notes come back with the BOQ, so they always describe what was produced.
-const suggestions = ref([])
+// The stored revision carries its own notes too — a convention warning on a
+// line survives a reload, because it is a property of the bill, not the click
+// that made it.
+const localNotes = ref([])
+const suggestions = computed(() => [...store.boqNotes, ...localNotes.value])
 
-// Where the current figures came from: a real analysis engine, or the local
-// template stand-in. The UI must never imply the drawing was read when it
-// was not.
-const boqSource = ref(hasAnalysisEngine() ? 'engine' : 'stand-in')
+// Where the current figures came from. A stored revision states its own
+// provenance; with no revision, nothing has been measured and the UI must not
+// imply otherwise.
+const boqSource = computed(() => (store.boqSource === 'engine' ? 'engine' : 'none'))
 const provenance = computed(() => SOURCE_LABELS[boqSource.value])
 const suggColor = { warning: 'border-warning/30 bg-warning/5', success: 'border-success/30 bg-success/5', info: 'border-primary/30 bg-primary/5' }
 const suggDot = { warning: 'bg-warning', success: 'bg-success', info: 'bg-primary' }
@@ -62,21 +82,37 @@ async function generate() {
   }
   if (generating.value) return
 
+  // A drawing still being read has no measurements to bill from yet.
+  const pending = drawings.value.filter((d) => d.status === 'Analyzing').length
+  if (pending && !drawings.value.some((d) => d.status === 'Ready')) {
+    toast(`Still reading ${pending} drawing${pending > 1 ? 's' : ''} — try again in a moment`, 'info')
+    return
+  }
+
   generating.value = true
-  const result = await buildBoq(drawings.value, { projectId: PROJECT_ID })
+  const result = await buildBoq(drawings.value, { projectId: projectId.value })
   generating.value = false
 
-  store.replaceBoqItems(result.items)
-  suggestions.value = result.notes
-  boqSource.value = result.source
+  store.replaceBoqItems(result.items, {
+    source: result.failed ? null : 'engine',
+    notes: result.notes,
+    revision: result.revision ?? null,
+  })
+  localNotes.value = []
   activeSection.value = 'All'
   editingId.value = null
 
-  if (result.degraded) {
-    toast('Analysis engine unavailable — showing template figures instead', 'warning')
+  if (result.failed) {
+    // A refusal the user can act on — nothing analysed yet, out of AI credits.
+    toast(result.failed, 'warning')
+    return
+  }
+  if (!result.items.length) {
+    toast('Nothing billable came back from those drawings', 'warning')
+    return
   }
   toast(
-    `${result.source === 'engine' ? 'Measured' : 'Estimated'} ${result.items.length} items from ` +
+    `Measured ${result.items.length} items from ` +
       `${result.sources.length} drawing${result.sources.length > 1 ? 's' : ''}`
   )
 }
@@ -84,18 +120,32 @@ function uploadDrawing() {
   dropzone.value?.browse()
 }
 function onUploaded(added) {
-  // Show the newest upload in the viewer and rebuild the BOQ from it.
   selectedDocId.value = added[0].id
-  generate()
+  // The engine reads the drawing server-side, so generating now would bill from
+  // nothing. Wait for the analysis to land, then offer to build the bill.
+  toast('Analyzing — generate the BOQ once the drawing is read', 'info')
 }
 function selectDrawing(doc) {
   selectedDocId.value = doc.id
 }
-function exportBoq() {
-  const rows = [['Code', 'Description', 'Unit', 'Qty', 'Rate', 'Amount']]
-  filtered.value.forEach((i) => rows.push([i.code, i.desc, i.unit, i.qty, i.rate, i.qty * i.rate]))
-  const csv = rows.map((r) => r.join(',')).join('\n')
-  downloadMock('Lekki-Duplex-BOQ.csv', csv)
+
+async function exportBoq() {
+  // Prefer the server's own CSV: it is rendered from the stored revision, so
+  // the export and the bill cannot disagree. It also carries the confidence
+  // and source columns the on-screen table does not show.
+  const blob = await store.exportBoq(projectId.value)
+  if (!blob) {
+    toast('There is nothing to export yet', 'warning')
+    return
+  }
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${store.current?.name || 'project'} — BOQ.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
   toast('BOQ exported')
 }
 // Adding a line used to append a blank "New item — edit description" row.
@@ -125,7 +175,10 @@ function openAddItem() {
   addOpen.value = true
 }
 
-function addItem() {
+const saving = ref(false)
+
+async function addItem() {
+  if (saving.value) return
   const desc = draft.value.desc.trim()
   if (!desc) {
     draftError.value = 'Describe the work item.'
@@ -144,24 +197,32 @@ function addItem() {
     return
   }
 
-  const item = store.addBoqItem(draft.value.section)
-  store.updateBoqItem(item.id, {
-    desc,
-    unit: normalizeUnit(draft.value.unit),
-    qty: Number(draft.value.qty),
-    rate: Number(draft.value.rate),
-  })
-  // Manually entered lines are certain — they did not come from the model.
-  store.updateBoqItem(item.id, { confidence: 100 })
-  activeSection.value = 'All'
-  query.value = ''
-  addOpen.value = false
-  toast(`${desc} added to ${draft.value.section}`)
+  saving.value = true
+  try {
+    // One call with the whole line. A hand-entered item carries no confidence —
+    // there is nothing a machine was confident about — and the store and server
+    // both leave it null rather than stamping it 100%.
+    await store.addBoqItem({
+      desc,
+      section: draft.value.section,
+      unit: normalizeUnit(draft.value.unit),
+      qty: Number(draft.value.qty),
+      rate: Number(draft.value.rate),
+    })
+    activeSection.value = 'All'
+    query.value = ''
+    addOpen.value = false
+    toast(`${desc} added to ${draft.value.section}`)
+  } catch (err) {
+    draftError.value = err.message || 'That item could not be added.'
+  } finally {
+    saving.value = false
+  }
 }
 function editItem(item) {
   editingId.value = editingId.value === item.id ? null : item.id
 }
-function commitEdit(item, field, value) {
+async function commitEdit(item, field, value) {
   // The rate is quoted per the item's current unit. Switching m² to m without
   // changing the rate silently mis-prices the line, so say so.
   if (field === 'unit') {
@@ -173,16 +234,26 @@ function commitEdit(item, field, value) {
       )
     }
   }
-  store.updateBoqItem(item.id, { [field]: value })
+  try {
+    await store.updateBoqItem(item.id, { [field]: value })
+  } catch (err) {
+    toast(err.message || 'That change could not be saved', 'warning')
+    // The optimistic edit no longer matches the server, so re-read the bill.
+    await store.fetchBoq().catch(() => {})
+  }
 }
 function finishEdit() {
   if (editingId.value === null) return
   editingId.value = null
   toast('Item updated')
 }
-function deleteItem(item) {
-  store.removeBoqItem(item)
-  toast(`Removed ${item.code}`)
+async function deleteItem(item) {
+  try {
+    await store.removeBoqItem(item)
+    toast(`Removed ${item.code}`)
+  } catch (err) {
+    toast(err.message || 'That item could not be removed', 'warning')
+  }
 }
 function confidenceColor(c) {
   if (c >= 95) return 'text-success'
@@ -294,7 +365,7 @@ function confidenceColor(c) {
 
           <FileDropzone
             ref="dropzone"
-            :scope="PROJECT_ID"
+            :scope="projectId"
             compact
             label="Drop drawings or plans here"
             @uploaded="onUploaded"
@@ -306,7 +377,7 @@ function confidenceColor(c) {
               <span v-if="drawings.length" class="text-brand-muted">· {{ drawings.length }}</span>
             </p>
             <DocumentList
-              :scope="PROJECT_ID"
+              :scope="projectId"
               drawings-only
               selectable
               :selected-id="activeDrawing ? activeDrawing.id : ''"
@@ -376,6 +447,9 @@ function confidenceColor(c) {
             </thead>
             <tbody>
               <tr v-for="item in filtered" :key="item.id" class="group border-b border-brand-border-light transition-colors hover:bg-brand-bg">
+                <!-- Codes are derived from the item's section and position in
+                     the bill and renumber themselves on every add or delete, so
+                     they are not editable once the server owns them. -->
                 <td class="px-5 py-3 font-mono text-xs text-brand-muted">
                   <input v-if="editingId === item.id" :value="item.code" class="w-16 rounded-md border border-brand-border px-1.5 py-1 font-mono text-xs focus:border-primary focus:outline-none"
                     @input="commitEdit(item, 'code', $event.target.value)" @keydown.enter="finishEdit" />
@@ -426,6 +500,19 @@ function confidenceColor(c) {
               </tr>
             </tbody>
           </table>
+
+          <p v-if="store.boqLoading && !filtered.length" class="px-5 py-14 text-center text-sm text-brand-muted">
+            Loading the bill…
+          </p>
+          <p v-else-if="!filtered.length" class="px-5 py-14 text-center text-sm text-brand-muted">
+            <template v-if="store.boqItems.length">No items match that search.</template>
+            <template v-else-if="drawings.length">
+              No bill yet — generate one from the {{ drawings.length }} uploaded drawing{{ drawings.length > 1 ? 's' : '' }}, or add a line by hand.
+            </template>
+            <template v-else>
+              Upload a drawing to generate a bill, or add lines by hand.
+            </template>
+          </p>
         </div>
 
         <!-- Footer total -->
@@ -478,8 +565,10 @@ function confidenceColor(c) {
             </p>
             <p v-if="draftError" class="text-sm font-medium text-danger">{{ draftError }}</p>
             <div class="flex gap-2 pt-2">
-              <button type="button" class="btn-outline btn-md flex-1" @click="addOpen = false">Cancel</button>
-              <button type="submit" class="btn-primary btn-md flex-1"><Plus class="h-4 w-4" /> Add item</button>
+              <button type="button" class="btn-outline btn-md flex-1" :disabled="saving" @click="addOpen = false">Cancel</button>
+              <button type="submit" class="btn-primary btn-md flex-1" :disabled="saving">
+                <Plus class="h-4 w-4" /> {{ saving ? 'Adding…' : 'Add item' }}
+              </button>
             </div>
           </form>
         </div>

@@ -1,34 +1,75 @@
 <script setup>
 import { RouterLink } from 'vue-router'
 import {
-  FolderKanban, Wallet, FileSpreadsheet, Sparkles, ArrowRight, ArrowUpRight,
+  FolderKanban, Wallet, FileSpreadsheet, Sparkles, ArrowRight,
   Bot, CheckCircle2, Upload, MessageSquare, Pencil, Plus,
 } from 'lucide-vue-next'
 import StatCard from '@/components/StatCard.vue'
-import AreaChart from '@/components/charts/AreaChart.vue'
 import DoughnutChart from '@/components/charts/DoughnutChart.vue'
+import { computed, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProjectsStore } from '@/stores/projects'
-import { formatMoney } from '@/utils/format'
+import { useReportsStore } from '@/stores/reports'
+import { useBillingStore } from '@/stores/billing'
+import { formatMoney, formatNumber, timeAgo } from '@/utils/format'
 
 const auth = useAuthStore()
 const store = useProjectsStore()
+const reports = useReportsStore()
+const billing = useBillingStore()
 
-const activityIcon = { ai: Bot, approve: CheckCircle2, upload: Upload, comment: MessageSquare, edit: Pencil }
-const activityColor = {
+onMounted(async () => {
+  await store.fetchProjects().catch(() => {})
+  // The feed follows whichever project is current; without one it stays empty
+  // rather than showing another project's history.
+  if (store.currentProjectId) {
+    store.fetchActivity()
+    store.fetchBoq().catch(() => {})
+  }
+  reports.fetchKpis()
+  billing.fetchUsage()
+})
+
+// The system records no month-on-month history, so there is no delta to show.
+// A "+12% vs last month" badge would be an invention.
+const boqsGenerated = computed(() => formatNumber(reports.kpis?.boqsGenerated ?? 0))
+const creditsUsed = computed(() => formatNumber(billing.usage?.credits?.used ?? 0))
+
+// The server tags events with its own vocabulary (success, info, warning, ai,
+// upload, edit). Anything unrecognised still gets an icon rather than rendering
+// an undefined component.
+const ACTIVITY_ICONS = {
+  ai: Bot,
+  approve: CheckCircle2,
+  success: CheckCircle2,
+  upload: Upload,
+  comment: MessageSquare,
+  edit: Pencil,
+  info: MessageSquare,
+  warning: Pencil,
+}
+const ACTIVITY_COLORS = {
   ai: 'bg-primary/10 text-primary',
   approve: 'bg-success/10 text-success',
+  success: 'bg-success/10 text-success',
   upload: 'bg-warning/10 text-warning',
+  warning: 'bg-warning/10 text-warning',
   comment: 'bg-secondary/10 text-secondary-variant',
+  info: 'bg-secondary/10 text-secondary-variant',
   edit: 'bg-primary-light/20 text-primary-dark',
 }
+const activityIcon = (type) => ACTIVITY_ICONS[type] || Pencil
+const activityColor = (type) => ACTIVITY_COLORS[type] || 'bg-brand-border text-brand-muted'
 
-const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
-const costTrend = [
-  { label: 'Estimated', data: [120, 145, 138, 162, 178, 185].map((n) => n * 1_000_000), color: '#1CA5F6' },
-  { label: 'Actual', data: [118, 150, 134, 158, 172, 181].map((n) => n * 1_000_000), color: '#2DC875' },
-]
-const costBreakdown = { labels: ['Substructure', 'Superstructure', 'Finishes', 'Roofing', 'Services'], data: [28, 34, 18, 9, 11] }
+// Cost breakdown is real: the section totals of the current project's bill.
+// The estimated-vs-actual trend that used to sit beside it was six months of
+// invented figures — the system records no actual spend to compare against, so
+// there is nothing to plot and the panel says so.
+const costBreakdown = computed(() => ({
+  labels: store.boqSections.map((x) => x.section),
+  data: store.boqSections.map((x) => x.total),
+}))
+const hasBreakdown = computed(() => costBreakdown.value.labels.length > 0)
 
 const statusColor = {
   'In Progress': 'bg-primary/10 text-primary-dark',
@@ -51,10 +92,10 @@ const statusColor = {
 
     <!-- Stats -->
     <div class="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-      <StatCard label="Active Projects" :value="String(store.activeCount)" delta="12%" trend="up" :icon="FolderKanban" icon-class="bg-primary/10 text-primary" />
-      <StatCard label="Total Portfolio Value" :value="formatMoney(store.totalBudget)" delta="8.4%" trend="up" :icon="Wallet" icon-class="bg-success/10 text-success" />
-      <StatCard label="BOQs Generated" value="146" delta="23%" trend="up" :icon="FileSpreadsheet" icon-class="bg-warning/10 text-warning" />
-      <StatCard label="AI Credits Used" value="1,240" delta="5%" trend="down" :icon="Sparkles" icon-class="bg-primary-light/20 text-primary-dark" />
+      <StatCard label="Active Projects" :value="String(store.activeCount)" delta="" trend="up" :icon="FolderKanban" icon-class="bg-primary/10 text-primary" />
+      <StatCard label="Total Portfolio Value" :value="formatMoney(store.totalBudget)" delta="" trend="up" :icon="Wallet" icon-class="bg-success/10 text-success" />
+      <StatCard label="BOQs Generated" :value="boqsGenerated" delta="" trend="up" :icon="FileSpreadsheet" icon-class="bg-warning/10 text-warning" />
+      <StatCard label="AI Credits Used" :value="creditsUsed" delta="" trend="down" :icon="Sparkles" icon-class="bg-primary-light/20 text-primary-dark" />
     </div>
 
     <!-- Charts -->
@@ -63,18 +104,23 @@ const statusColor = {
         <div class="mb-5 flex items-center justify-between">
           <div>
             <h3 class="font-display text-lg font-bold text-secondary">Cost Performance</h3>
-            <p class="text-sm text-brand-muted">Estimated vs actual spend (last 6 months)</p>
+            <p class="text-sm text-brand-muted">Estimated vs actual spend</p>
           </div>
-          <span class="badge bg-success/10 text-success"><ArrowUpRight class="h-3 w-3" /> On budget</span>
         </div>
-        <AreaChart :labels="months" :datasets="costTrend" currency :height="280" />
+        <p class="grid h-[280px] place-content-center rounded-xl border border-dashed border-brand-border-light px-6 text-center text-sm text-brand-muted">
+          No actual spend is recorded against estimates, so there is nothing to compare.
+          Track costs on a project to populate this.
+        </p>
       </div>
 
       <div class="card p-6">
         <h3 class="font-display text-lg font-bold text-secondary">Cost Breakdown</h3>
         <p class="text-sm text-brand-muted">By construction element</p>
         <div class="mt-4">
-          <DoughnutChart :labels="costBreakdown.labels" :data="costBreakdown.data" :height="240" />
+          <DoughnutChart v-if="hasBreakdown" :labels="costBreakdown.labels" :data="costBreakdown.data" :height="240" />
+          <p v-else class="grid h-[240px] place-content-center rounded-xl border border-dashed border-brand-border-light px-4 text-center text-sm text-brand-muted">
+            Generate a bill of quantities to see where the cost sits.
+          </p>
         </div>
       </div>
     </div>
@@ -119,18 +165,21 @@ const statusColor = {
       <!-- Activity feed -->
       <div class="card p-6">
         <h3 class="mb-4 font-display text-lg font-bold text-secondary">Activity</h3>
-        <div class="space-y-1">
+        <p v-if="!store.activity.length" class="rounded-xl border border-dashed border-brand-border-light px-4 py-8 text-center text-sm text-brand-muted">
+          Nothing has happened on this project yet.
+        </p>
+        <div v-else class="space-y-1">
           <div v-for="(a, i) in store.activity" :key="a.id" class="relative flex gap-3 pb-5 last:pb-0">
             <div v-if="i < store.activity.length - 1" class="absolute left-[18px] top-9 h-full w-px bg-brand-border-light"></div>
-            <div :class="activityColor[a.type]" class="z-10 grid h-9 w-9 shrink-0 place-items-center rounded-full">
-              <component :is="activityIcon[a.type]" class="h-4 w-4" />
+            <div :class="activityColor(a.type)" class="z-10 grid h-9 w-9 shrink-0 place-items-center rounded-full">
+              <component :is="activityIcon(a.type)" class="h-4 w-4" />
             </div>
             <div class="pt-1">
               <p class="text-sm text-secondary">
                 <span class="font-semibold">{{ a.user }}</span> {{ a.action }}
                 <span class="font-semibold text-primary-dark">{{ a.target }}</span>
               </p>
-              <p class="mt-0.5 text-xs text-brand-light">{{ a.time }}</p>
+              <p class="mt-0.5 text-xs text-brand-light">{{ timeAgo(a.time) }}</p>
             </div>
           </div>
         </div>

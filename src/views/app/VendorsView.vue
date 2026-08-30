@@ -11,12 +11,34 @@ import { useToast } from '@/composables/useToast'
 import { formatFull } from '@/utils/format'
 import { normalizeUnit, COMMON_UNITS } from '@/utils/units'
 import { useAuthStore } from '@/stores/auth'
-import { pay, isConfigured } from '@/utils/paystack'
+import { useRoute, useRouter } from 'vue-router'
+import { api } from '@/services/api'
 
 const store = useVendorsStore()
 const auth = useAuthStore()
 const { toast } = useToast()
+const route = useRoute()
+const router = useRouter()
 const processing = ref(false)
+
+onMounted(async () => {
+  await store.fetchAll()
+
+  // Coming back from Paystack after unlocking a vendor or paying a listing fee.
+  // The reference is in the URL; the server decides what it bought.
+  const reference = route.query.reference || route.query.trxref
+  if (reference) {
+    try {
+      await api.post('/payments/verify', { reference: String(reference) })
+      await store.fetchAll()
+      toast('Payment confirmed — thank you.')
+    } catch (err) {
+      toast(err.message || 'That payment could not be confirmed', 'warning')
+    } finally {
+      router.replace({ query: {} })
+    }
+  }
+})
 
 // Map the icon names stored in the categories data → real components.
 const icons = { Home, Package, Boxes, Hammer, Wrench, Grid3x3, Droplets, Zap, Paintbrush, Mountain }
@@ -31,8 +53,6 @@ const showSaved = ref(false)     // saved-prices drawer
 const registerOpen = ref(false)  // vendor sign-up / edit listing modal
 const editingId = ref(null)      // set when editing an existing own listing
 const formErrors = ref([])
-const listingPayOpen = ref(false) // ₦1,000 listing fee, before a shop goes live
-const listingPaid = ref(false)
 
 // --- vendor registration ---------------------------------------------------
 function blankListing() {
@@ -89,10 +109,10 @@ function removeProductRow(i) {
   listing.value.products.splice(i, 1)
 }
 
-function submitListing() {
+async function submitListing() {
   // Editing a shop you already paid for is free.
   if (editingId.value) {
-    const res = store.updateListing(editingId.value, listing.value)
+    const res = await store.updateListing(editingId.value, listing.value)
     if (!res.ok) {
       formErrors.value = res.errors
       return
@@ -112,55 +132,29 @@ function submitListing() {
     return
   }
   formErrors.value = []
-  listingPaid.value = false
-  listingPayOpen.value = true
-}
-
-async function confirmListingPayment() {
-  if (processing.value) return
-  if (!isConfigured()) {
-    toast('Payments are not configured yet — add your Paystack public key.', 'warning')
-    return
-  }
-
+  // The SERVER creates the listing as unpaid and hands back the Paystack
+  // authorization URL. The shop stays invisible to everyone else until the fee
+  // clears, so there is no way to publish for free.
   processing.value = true
-  const payment = await pay({
-    email: listing.value.email || auth.user.email,
-    amountNaira: LISTING_FEE,
-    purpose: 'LISTING',
-    metadata: { business: listing.value.name, category: listing.value.category },
-  })
-  processing.value = false
-
-  if (!payment.ok) {
-    if (!payment.cancelled) toast(payment.error, 'warning')
-    return
-  }
-
-  const res = store.registerVendor(listing.value, { feePaid: true, reference: payment.reference })
-  if (!res.ok) {
-    formErrors.value = res.errors
-    listingPayOpen.value = false
-    return
-  }
-  listingPaid.value = true
-  toast(`Listing fee paid — ${res.vendor.name} is now on the marketplace`)
-  activeVendor.value = res.vendor
-}
-
-function closeListingPayment() {
-  listingPayOpen.value = false
-  // Only clear the form once the listing actually went live.
-  if (listingPaid.value) {
+  try {
+    const res = await store.registerVendor(listing.value)
+    if (!res.ok) {
+      formErrors.value = res.errors
+      return
+    }
+    if (res.payment?.authorizationUrl) {
+      window.location.href = res.payment.authorizationUrl
+      return
+    }
     registerOpen.value = false
-    editingId.value = null
-    listing.value = blankListing()
+    toast(`${res.vendor.name} submitted for review`)
+  } finally {
+    processing.value = false
   }
-  listingPaid.value = false
 }
 
-function deleteListing(v) {
-  if (v && store.removeListing(v.id)) {
+async function deleteListing(v) {
+  if (v && (await store.removeListing(v.id))) {
     activeVendor.value = null
     registerOpen.value = false
     toast(`${v.name} removed from the marketplace`, 'info')
@@ -169,12 +163,11 @@ function deleteListing(v) {
 
 // --- modal behaviour -------------------------------------------------------
 const anyModalOpen = computed(
-  () => !!activeVendor.value || !!payingFor.value || showSaved.value || registerOpen.value || listingPayOpen.value
+  () => !!activeVendor.value || !!payingFor.value || showSaved.value || registerOpen.value
 )
 
 function closeTopmost() {
-  if (listingPayOpen.value) closeListingPayment()
-  else if (registerOpen.value) registerOpen.value = false
+  if (registerOpen.value) registerOpen.value = false
   else if (payingFor.value) closePayment()
   else if (activeVendor.value) activeVendor.value = null
   else if (showSaved.value) showSaved.value = false
@@ -221,36 +214,37 @@ function startPayment(v) {
 async function confirmPayment() {
   if (processing.value) return
   const vendor = payingFor.value
-  if (!isConfigured()) {
-    toast('Payments are not configured yet — add your Paystack public key.', 'warning')
-    return
-  }
 
+  // The SERVER starts the transaction and decides the price, so a tampered
+  // browser cannot unlock a vendor for an amount it chose.
   processing.value = true
-  const result = await pay({
-    email: auth.user.email,
-    amountNaira: vendor.unlockPrice,
-    purpose: 'UNLOCK',
-    metadata: { vendorId: vendor.id, vendor: vendor.name },
-  })
-  processing.value = false
-
-  if (!result.ok) {
-    if (!result.cancelled) toast(result.error, 'warning')
-    return
+  try {
+    const res = await store.unlock(vendor.id)
+    if (res.unlocked) {
+      paid.value = true
+      toast(`Contacts unlocked for ${vendor.name}`)
+      // Re-read so the profile modal shows the contacts that just arrived.
+      activeVendor.value = store.vendors.find((v) => v.id === vendor.id) || activeVendor.value
+      return
+    }
+    if (res.payment?.authorizationUrl) {
+      window.location.href = res.payment.authorizationUrl
+      return
+    }
+    toast('Could not start that payment. Please try again.', 'warning')
+  } catch (err) {
+    toast(err.message || 'That vendor could not be unlocked', 'warning')
+  } finally {
+    processing.value = false
   }
-
-  // Reached only after the reference was verified server-side.
-  store.unlock(vendor.id)
-  paid.value = true
-  toast(`Contacts unlocked for ${vendor.name}`)
 }
+
 function closePayment() {
   payingFor.value = null
   paid.value = false
 }
-function savePrice(vendor, product) {
-  const added = store.savePrice(vendor, product)
+async function savePrice(vendor, product) {
+  const added = await store.savePrice(vendor, product)
   toast(added ? `${product.name} added to your estimate prices` : 'Already saved', added ? 'success' : 'info')
 }
 </script>
@@ -684,65 +678,6 @@ function savePrice(vendor, product) {
         </div>
       </div>
     </transition>
-
-    <!-- ============================= Listing fee ============================= -->
-  <transition name="page">
-    <div v-if="listingPayOpen" class="fixed inset-0 z-[80] flex items-center justify-center bg-secondary/50 p-4 backdrop-blur-sm" @click.self="closeListingPayment">
-      <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-card-hover">
-        <!-- paid -->
-        <div v-if="listingPaid" class="p-8 text-center">
-          <div class="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-success/10 text-success"><CheckCircle2 class="h-8 w-8" /></div>
-          <h3 class="mt-4 font-display text-xl font-bold text-secondary">You're listed!</h3>
-          <p class="mx-auto mt-1 max-w-xs text-sm text-brand-muted">
-            <span class="font-semibold text-secondary">{{ listing.name }}</span> is now on the marketplace. Surveyors pay
-            {{ formatFull(listing.unlockPrice) }} to unlock your contacts.
-          </p>
-          <div class="mt-5 rounded-2xl bg-brand-bg p-4 text-left text-sm">
-            <div class="flex justify-between"><span class="text-brand-muted">Listing fee paid</span><span class="font-semibold text-secondary">{{ formatFull(LISTING_FEE) }}</span></div>
-            <div class="mt-1.5 flex justify-between"><span class="text-brand-muted">Status</span><span class="font-semibold text-warning">Pending review</span></div>
-          </div>
-          <button class="btn-primary btn-md mt-5 w-full" @click="closeListingPayment">Done</button>
-        </div>
-
-        <!-- pay -->
-        <div v-else>
-          <div class="flex items-center justify-between border-b border-brand-border-light px-6 py-4">
-            <h3 class="font-display text-lg font-bold text-secondary">Pay your listing fee</h3>
-            <button class="btn btn-ghost btn-sm" @click="closeListingPayment"><X class="h-5 w-5" /></button>
-          </div>
-          <div class="space-y-5 p-6">
-            <div class="flex items-center gap-3 rounded-2xl bg-brand-bg p-4">
-              <div :class="['bg-gradient-to-br', store.categoryMeta(listing.category)?.accent]" class="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-white">
-                <component :is="icons[store.categoryMeta(listing.category)?.icon]" class="h-5 w-5" />
-              </div>
-              <div class="min-w-0">
-                <p class="truncate font-semibold text-secondary">{{ listing.name }}</p>
-                <p class="truncate text-xs text-brand-muted">{{ listing.location }} · {{ listing.products.filter((x) => x.name).length }} products</p>
-              </div>
-            </div>
-
-            <ul class="space-y-2 text-sm text-brand-muted">
-              <li class="flex items-center gap-2"><CheckCircle2 class="h-4 w-4 shrink-0 text-success" /> Your shop listed across the marketplace</li>
-              <li class="flex items-center gap-2"><CheckCircle2 class="h-4 w-4 shrink-0 text-success" /> Buyers pay you {{ formatFull(listing.unlockPrice) }} per contact unlock</li>
-              <li class="flex items-center gap-2"><CheckCircle2 class="h-4 w-4 shrink-0 text-success" /> Edit your prices and products any time, free</li>
-            </ul>
-
-            <div class="flex items-center justify-between rounded-xl border border-brand-border-light px-4 py-3">
-              <span class="text-sm text-brand-muted">One-off listing fee</span>
-              <span class="font-display text-xl font-bold text-secondary">{{ formatFull(LISTING_FEE) }}</span>
-            </div>
-
-            <button class="btn-primary btn-md w-full" :disabled="processing" @click="confirmListingPayment">
-              <CreditCard class="h-4 w-4" />
-              {{ processing ? 'Opening Paystack…' : `Pay ${formatFull(LISTING_FEE)} & publish` }}
-            </button>
-            <button class="btn-outline btn-md w-full" @click="closeListingPayment">Back to my details</button>
-            <p class="text-center text-xs text-brand-light">Secure payment by Paystack.</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </transition>
 
   <!-- ============================= Saved prices drawer ============================= -->
     <transition name="page">

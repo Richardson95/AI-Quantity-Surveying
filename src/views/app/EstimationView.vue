@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { Calculator, TrendingUp, TrendingDown, Sparkles, RefreshCw, Globe, Package, HardHat, Wrench, Store, Trash2, ArrowRight, FileSpreadsheet, Upload } from 'lucide-vue-next'
 import BarChart from '@/components/charts/BarChart.vue'
@@ -8,6 +8,8 @@ import { useToast } from '@/composables/useToast'
 import { useVendorsStore } from '@/stores/vendors'
 import { useCostsStore } from '@/stores/costs'
 import { useProjectsStore } from '@/stores/projects'
+import { useRatesStore } from '@/stores/rates'
+import { api } from '@/services/api'
 import { formatFull } from '@/utils/format'
 import CostUpload from '@/components/CostUpload.vue'
 
@@ -15,93 +17,144 @@ const { toast } = useToast()
 const vendors = useVendorsStore()
 const costs = useCostsStore()
 const projects = useProjectsStore()
+const ratesStore = useRatesStore()
+
 const region = ref('Lagos')
 const estimating = ref(false)
+const projectId = computed(() => projects.currentProjectId)
 
-// Every figure on this page is quoted in Lagos rates, then adjusted by region.
-// Materials, labour and equipment each move differently between markets.
-const regionFactors = {
-  Lagos: { label: 'Lagos', material: 1, labour: 1, equipment: 1, benchmark: 193400000 },
-  Abuja: { label: 'Abuja', material: 1.06, labour: 1.12, equipment: 1.04, benchmark: 205600000 },
-  'Port Harcourt': { label: 'Port Harcourt', material: 1.09, labour: 1.05, equipment: 1.08, benchmark: 203100000 },
-  Kano: { label: 'Kano', material: 0.94, labour: 0.86, equipment: 0.97, benchmark: 176800000 },
+// ---------------------------------------------------------------------------
+// The server's estimate.
+// ---------------------------------------------------------------------------
+// Every figure on this screen comes from it. Two things it will not do:
+//
+//   • Substitute a basis. No BOQ means a basis of zero and a note saying so —
+//     not the fabricated ₦185.2M this page used to fall back to.
+//   • Invent a benchmark. One appears only where an administrator has set a
+//     real figure on the region; it is never derived by scaling anything.
+// ---------------------------------------------------------------------------
+const server = ref(null)
+const serverRates = ref([])
+
+async function loadEstimate() {
+  if (!projectId.value) return
+  try {
+    const data = await api.get(`/projects/${projectId.value}/estimate?region=${encodeURIComponent(region.value)}`)
+    server.value = data.estimate
+    serverRates.value = data.rateAnalysis || []
+  } catch (err) {
+    toast(err.message || 'Could not load the estimate', 'warning')
+  }
 }
-const regions = Object.keys(regionFactors)
-const factor = computed(() => regionFactors[region.value])
 
-// Standard cost split applied to the priced BOQ.
-const SPLIT = [
-  { name: 'Materials', share: 0.53, driver: 'material', icon: Package, color: 'bg-primary/10 text-primary' },
-  { name: 'Labour', share: 0.28, driver: 'labour', icon: HardHat, color: 'bg-success/10 text-success' },
-  { name: 'Equipment', share: 0.11, driver: 'equipment', icon: Wrench, color: 'bg-warning/10 text-warning' },
-  { name: 'Overheads & Profit', share: 0.08, driver: 'material', icon: TrendingUp, color: 'bg-primary-light/20 text-primary-dark' },
-]
-
-// Used only until a BOQ exists, so the page is never empty on a fresh install.
-const FALLBACK_TOTAL = 185200000
-
-// The estimate is priced off the current Bill of Quantities, so regenerating
-// the BOQ from new drawings flows straight through to the cost here.
-const boqTotal = computed(() => projects.boqItems.reduce((a, i) => a + i.qty * i.rate, 0))
-const basis = computed(() => (boqTotal.value > 0 ? boqTotal.value : FALLBACK_TOTAL))
-
-const categories = computed(() => {
-  const rows = SPLIT.map((c) => ({
-    ...c,
-    value: Math.round(basis.value * c.share * factor.value[c.driver]),
-  }))
-  const sum = rows.reduce((a, c) => a + c.value, 0)
-  return rows.map((c) => ({ ...c, pct: Math.round((c.value / sum) * 100) }))
+onMounted(async () => {
+  await projects.ensureProject()
+  await Promise.all([
+    projects.fetchBoq().catch(() => {}),
+    costs.fetchForProject(projectId.value).catch(() => {}),
+    ratesStore.fetchRegions(),
+    vendors.fetchSavedPrices(),
+    loadEstimate(),
+  ])
 })
 
-const total = computed(() => categories.value.reduce((a, c) => a + c.value, 0))
+watch([projectId, region], async () => {
+  await Promise.all([costs.fetchForProject(projectId.value).catch(() => {}), loadEstimate()])
+})
 
-// Positive means under benchmark, which is the competitive direction.
+// Regional factors and benchmarks live in a table an administrator edits, not
+// in this file. An unconfigured region simply has no factors and no benchmark.
+const regions = computed(() => ratesStore.regions.map((r) => r.name))
+
+const factor = computed(() => {
+  const f = server.value?.factors
+  return {
+    label: server.value?.region ?? region.value,
+    material: f?.material ?? 1,
+    labour: f?.labour ?? 1,
+    equipment: f?.equipment ?? 1,
+  }
+})
+
+// The category split the server applies. These shares are a convention, not a
+// measurement, and the server flags them as such in its own notes.
+const SPLIT = [
+  { name: 'Materials', key: 'materials', icon: Package, color: 'bg-primary/10 text-primary' },
+  { name: 'Labour', key: 'labour', icon: HardHat, color: 'bg-success/10 text-success' },
+  { name: 'Equipment', key: 'equipment', icon: Wrench, color: 'bg-warning/10 text-warning' },
+  { name: 'Overheads & Profit', key: 'overheads', icon: TrendingUp, color: 'bg-primary-light/20 text-primary-dark' },
+]
+
+// The estimate is priced off the current Bill of Quantities, so regenerating
+// the BOQ from new drawings flows straight through to the cost here. There is
+// no fallback basis: this screen used to substitute a fabricated ₦185,200,000
+// when no bill existed, and then scale its "benchmark" by that same figure.
+const basis = computed(() => server.value?.basis ?? 0)
+
+// True when there is genuinely nothing to price from.
+const noBasis = computed(() => basis.value === 0)
+const notes = computed(() => server.value?.notes || [])
+
+const categories = computed(() => {
+  const rows = SPLIT.map((c) => ({ ...c, value: server.value?.categories?.[c.key] ?? 0 }))
+  const sum = rows.reduce((a, c) => a + c.value, 0)
+  return rows.map((c) => ({ ...c, pct: sum ? Math.round((c.value / sum) * 100) : 0 }))
+})
+
+const total = computed(() => server.value?.total ?? 0)
+
+// Only a benchmark an administrator actually set is compared against. Null
+// means no benchmark exists — which is not the same as being on budget.
+const benchmark = computed(() => server.value?.benchmark ?? null)
 const benchmarkDelta = computed(() => {
-  // Benchmark scales with the job so the comparison stays meaningful when the
-  // BOQ grows or shrinks.
-  const b = factor.value.benchmark * (basis.value / FALLBACK_TOTAL)
+  const b = benchmark.value
+  if (!b) return null
   return ((b - total.value) / b) * 100
 })
 
-const FALLBACK_ELEMENTS = {
-  Substructure: 42, Superstructure: 58, Roofing: 18,
-  Finishes: 31, 'Doors & Windows': 14, Services: 22,
-}
-
-// Real section totals from the BOQ, in millions.
+// Real section totals from the bill, in millions.
 const elements = computed(() => {
-  const bySection = {}
-  for (const i of projects.boqItems) {
-    bySection[i.section] = (bySection[i.section] || 0) + i.qty * i.rate
-  }
-  const source = Object.keys(bySection).length
-    ? Object.fromEntries(Object.entries(bySection).map(([k, v]) => [k, v / 1_000_000]))
-    : FALLBACK_ELEMENTS
-  const labels = Object.keys(source)
+  const sections = server.value?.sections || []
   return {
-    labels,
-    data: labels.map((l) => Math.round(source[l] * factor.value.material * 10) / 10),
+    labels: sections.map((x) => x.section),
+    data: sections.map((x) => Math.round((x.total / 1_000_000) * 10) / 10),
   }
 })
+const hasElements = computed(() => elements.value.labels.length > 0)
+
+/**
+ * The mean confidence across the bill lines that were actually MEASURED.
+ * Null when none were — a confidence score on quantities nobody measured is
+ * the exact lie this app exists not to tell, and the fixed "93.4%" that used
+ * to sit here was one.
+ */
+const measuredConfidence = computed(() => {
+  const scored = projects.boqItems.filter((i) => i.confidence != null)
+  if (!scored.length) return null
+  const mean = scored.reduce((a, i) => a + i.confidence, 0) / scored.length
+  return Math.round(mean * 10) / 10
+})
+
 const split = computed(() => ({
   labels: categories.value.map((c) => c.name),
   data: categories.value.map((c) => c.pct),
 }))
 
-const baseRates = [
-  { item: 'RC slab 150mm (per m²)', material: 14800, labour: 6200, equipment: 1500 },
-  { item: 'Block wall 225mm (per m²)', material: 4100, labour: 2300, equipment: 400 },
-  { item: 'Plaster 12mm (per m²)', material: 1300, labour: 950, equipment: 150 },
-  { item: 'Floor tiling (per m²)', material: 7800, labour: 3100, equipment: 600 },
-]
+// Every BOQ line priced against the rate library, showing where the firm's own
+// cost data disagrees. The four modelled "base rates" that used to sit here
+// were invented figures scaled by an invented regional factor.
 const rateAnalysis = computed(() =>
-  baseRates.map((r) => {
-    const material = Math.round(r.material * factor.value.material)
-    const labour = Math.round(r.labour * factor.value.labour)
-    const equipment = Math.round(r.equipment * factor.value.equipment)
-    return { ...r, material, labour, equipment, total: material + labour + equipment }
-  })
+  serverRates.value.map((r) => ({
+    id: r.id,
+    item: `${r.desc} (per ${r.unit})`,
+    // The server reports the applied rate, the library rate and the firm's own
+    // — not a modelled material/labour/equipment split it cannot know.
+    material: r.rate,
+    labour: r.libraryRate ?? 0,
+    equipment: r.ownRate ?? 0,
+    total: r.amount,
+    variance: r.variance,
+  }))
 )
 
 // Vendor-confirmed rates are added to the rate analysis as their own line, so a
@@ -146,43 +199,49 @@ function applyCostLine(line) {
   toast(`${line.item} applied at ${formatFull(line.rate)}`)
 }
 
-function removeCostLine(line) {
-  costs.remove(line.id)
+async function removeCostLine(line) {
+  await costs.remove(line.id)
   appliedRates.value = appliedRates.value.filter((r) => r.id !== line.id)
   toast('Cost line removed', 'info')
 }
 
-function clearAllCosts() {
-  costs.clear()
+async function clearAllCosts() {
+  await costs.clear(projectId.value)
   appliedRates.value = []
   toast('All uploaded costs cleared', 'info')
 }
 
-function clearCostSource(source) {
+async function clearCostSource(source) {
   const ids = costs.lines.filter((l) => l.source === source).map((l) => l.id)
-  costs.removeSource(source)
+  await costs.removeSource(source, projectId.value)
   appliedRates.value = appliedRates.value.filter((r) => !ids.includes(r.id))
   toast(`Removed all lines from ${source}`, 'info')
 }
 
 const lastEstimated = ref(null)
 
-function reEstimate() {
+async function reEstimate() {
   if (estimating.value) return
   estimating.value = true
   const before = total.value
-  setTimeout(() => {
-    estimating.value = false
+
+  try {
+    // The estimate is derived on read, so this recomputes from the current bill
+    // rather than storing a snapshot that could drift from it.
+    await projects.fetchBoq().catch(() => {})
+    await loadEstimate()
     lastEstimated.value = new Date()
+
     const delta = total.value - before
-    toast(
-      projects.boqItems.length
-        ? `Repriced ${projects.boqItems.length} BOQ items at ${region.value} rates — ${formatFull(total.value)}`
-        : `No BOQ yet — showing an indicative ${region.value} estimate`,
-      projects.boqItems.length ? 'success' : 'warning'
-    )
+    if (noBasis.value) {
+      toast('No bill of quantities yet — there is nothing to estimate from', 'warning')
+      return
+    }
+    toast(`Repriced ${projects.boqItems.length} BOQ items at ${region.value} rates — ${formatFull(total.value)}`)
     if (delta) toast(`${delta > 0 ? 'Up' : 'Down'} ${formatFull(Math.abs(delta))} on the previous run`, 'info')
-  }, 1200)
+  } finally {
+    estimating.value = false
+  }
 }
 </script>
 
@@ -191,12 +250,13 @@ function reEstimate() {
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">Cost Estimation</h2>
-        <p class="mt-1 text-brand-muted">AI-priced estimate · Lekki 4-Bedroom Duplex</p>
+        <p class="mt-1 text-brand-muted">AI-priced estimate<template v-if="projects.current"> · {{ projects.current.name }}</template></p>
         <p class="mt-1 text-xs text-brand-light">
           <template v-if="projects.boqItems.length">
             Priced from {{ projects.boqItems.length }} BOQ items<template v-if="projects.boqSources.length"> derived from {{ projects.boqSources.length }} drawing{{ projects.boqSources.length > 1 ? 's' : '' }}</template>
             <template v-if="lastEstimated"> · last run {{ lastEstimated.toLocaleTimeString('en-NG') }}</template>
           </template>
+          <template v-else-if="noBasis">No bill of quantities yet — there is nothing to price this job from.</template>
           <template v-else>Indicative figure — generate a BOQ to price this job from your drawings.</template>
         </p>
       </div>
@@ -220,19 +280,35 @@ function reEstimate() {
         <div>
           <p class="text-sm text-white/60">Total Estimated Cost ({{ region }} rates)</p>
           <p class="mt-1 font-display text-4xl font-extrabold text-white">{{ formatFull(total) }}</p>
-          <p class="mt-2 flex items-center gap-1.5 text-sm" :class="benchmarkDelta >= 0 ? 'text-success' : 'text-warning'">
+          <!-- Only a benchmark an administrator actually set is compared
+               against. No benchmark is not the same as being on budget. -->
+          <p v-if="benchmarkDelta !== null" class="mt-2 flex items-center gap-1.5 text-sm" :class="benchmarkDelta >= 0 ? 'text-success' : 'text-warning'">
             <component :is="benchmarkDelta >= 0 ? TrendingUp : TrendingDown" class="h-4 w-4" />
             {{ Math.abs(benchmarkDelta).toFixed(1) }}% {{ benchmarkDelta >= 0 ? 'below' : 'above' }} the {{ region }} benchmark
           </p>
+          <p v-else class="mt-2 text-sm text-white/50">No benchmark is set for {{ region }}, so no comparison is shown.</p>
         </div>
-        <div class="flex items-center gap-2 rounded-xl bg-white/10 px-4 py-3 text-white">
+        <!-- An "AI confidence" on a figure derived from a fixed percentage
+             split is meaningless, so it is shown only for a bill the engine
+             actually measured, and reads from those items. -->
+        <div v-if="measuredConfidence !== null" class="flex items-center gap-2 rounded-xl bg-white/10 px-4 py-3 text-white">
           <Sparkles class="h-5 w-5 text-primary-light" />
           <div>
-            <p class="text-xs text-white/60">AI confidence</p>
-            <p class="font-bold">93.4%</p>
+            <p class="text-xs text-white/60">Measured confidence</p>
+            <p class="font-bold">{{ measuredConfidence }}%</p>
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- What the server wants the reader to know about this estimate: an
+         uncalibrated regional factor, a missing benchmark, no bill to price
+         from. -->
+    <div v-if="notes.length" class="space-y-2">
+      <p v-for="n in notes" :key="n.text" class="rounded-xl border px-4 py-3 text-sm"
+        :class="n.type === 'warning' ? 'border-warning/30 bg-warning/5 text-brand-muted' : 'border-primary/30 bg-primary/5 text-brand-muted'">
+        {{ n.text }}
+      </p>
     </div>
 
     <!-- Category cards -->
@@ -252,7 +328,10 @@ function reEstimate() {
       <div class="card p-6 lg:col-span-2">
         <h3 class="mb-1 font-display text-lg font-bold text-secondary">Cost by Element</h3>
         <p class="mb-4 text-sm text-brand-muted">Estimated cost per construction element (₦M)</p>
-        <BarChart :key="region" :labels="elements.labels" :data="elements.data" :height="280" />
+        <BarChart v-if="hasElements" :key="region" :labels="elements.labels" :data="elements.data" :height="280" />
+        <p v-else class="grid h-[280px] place-content-center rounded-xl border border-dashed border-brand-border-light px-6 text-center text-sm text-brand-muted">
+          Nothing to break down yet — generate a bill of quantities first.
+        </p>
       </div>
       <div class="card p-6">
         <h3 class="mb-1 font-display text-lg font-bold text-secondary">Cost Split</h3>

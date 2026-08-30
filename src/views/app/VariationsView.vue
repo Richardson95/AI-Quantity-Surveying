@@ -1,31 +1,38 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { GitCompareArrows, Plus, ArrowUp, ArrowDown, Check, Clock, X, Trash2 } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
-import { formatFull } from '@/utils/format'
+import { useProjectsStore } from '@/stores/projects'
+import { useVariationsStore } from '@/stores/variations'
+import { formatFull, timeAgo } from '@/utils/format'
 
 const { toast } = useToast()
+const projects = useProjectsStore()
+const store = useVariationsStore()
+
 const filter = ref('All')
 const filters = ['All', 'Pending', 'Approved', 'Rejected']
 
-const variations = ref([
-  { id: 'VO-014', title: 'Upgrade kitchen finishes to imported tiles', rev: 'Rev B → Rev C', impact: 4200000, status: 'Approved', date: 'Jun 9', by: 'TJ' },
-  { id: 'VO-013', title: 'Additional borehole & water treatment', impact: 8600000, rev: 'Rev B → Rev C', status: 'Pending', date: 'Jun 8', by: 'KO' },
-  { id: 'VO-012', title: 'Reduce car park paving area by 120m²', impact: -2350000, rev: 'Rev A → Rev B', status: 'Approved', date: 'Jun 4', by: 'DA' },
-  { id: 'VO-011', title: 'Change roof from concrete tile to aluminium', impact: -5100000, rev: 'Rev A → Rev B', status: 'Approved', date: 'Jun 2', by: 'TJ' },
-  { id: 'VO-010', title: 'Add solar power provision', impact: 12400000, rev: 'Rev A → Rev B', status: 'Rejected', date: 'May 28', by: 'MN' },
-])
+const projectId = computed(() => projects.currentProjectId)
+const variations = computed(() => store.variations)
 
-let voSeq = 15
+onMounted(async () => {
+  await projects.ensureProject()
+  if (projectId.value) store.fetchForProject(projectId.value).catch((e) => toast(e.message, 'warning'))
+})
+watch(projectId, (id) => {
+  if (id) store.fetchForProject(id).catch(() => {})
+})
 
 // A variation is a described change with a cost, so ask for both rather than
 // inserting a placeholder row titled "describe the change".
 const createOpen = ref(false)
+const saving = ref(false)
 const draft = ref(blankVariation())
 const draftError = ref('')
 
 function blankVariation() {
-  return { title: '', revFrom: 'Rev C', revTo: 'Rev D', impact: null, direction: 'add' }
+  return { title: '', description: '', revFrom: 'Rev C', revTo: 'Rev D', impact: null, direction: 'add' }
 }
 
 function openCreate() {
@@ -34,7 +41,8 @@ function openCreate() {
   createOpen.value = true
 }
 
-function newVariation() {
+async function newVariation() {
+  if (saving.value) return
   const title = draft.value.title.trim()
   if (!title) {
     draftError.value = 'Describe the change.'
@@ -44,32 +52,72 @@ function newVariation() {
     draftError.value = 'Enter the cost impact as a positive figure, then pick add or omit.'
     return
   }
+
+  saving.value = true
   const magnitude = Math.abs(Number(draft.value.impact))
-  variations.value.unshift({
-    id: 'VO-' + String(voSeq++).padStart(3, '0'),
-    title,
-    rev: `${draft.value.revFrom} → ${draft.value.revTo}`,
-    // Omissions reduce the account, so they carry a negative impact.
-    impact: draft.value.direction === 'omit' ? -magnitude : magnitude,
-    status: 'Pending',
-    date: 'Just now',
-    by: 'DA',
-  })
-  filter.value = 'All'
-  createOpen.value = false
-  toast(`Variation raised — ${formatFull(magnitude)} ${draft.value.direction === 'omit' ? 'omission' : 'addition'}, pending approval`)
+  try {
+    await store.create(
+      {
+        title,
+        description: draft.value.description.trim() || title,
+        impact: magnitude,
+        direction: draft.value.direction,
+        revFrom: draft.value.revFrom,
+        revTo: draft.value.revTo,
+      },
+      projectId.value
+    )
+    filter.value = 'All'
+    createOpen.value = false
+    toast(`Variation raised — ${formatFull(magnitude)} ${draft.value.direction === 'omit' ? 'omission' : 'addition'}, pending approval`)
+  } catch (err) {
+    draftError.value = err.message || 'That variation could not be raised.'
+  } finally {
+    saving.value = false
+  }
 }
 
 // A variations register you cannot act on is just a list. Pending items get
-// approve / reject, and an approved or rejected one can be reopened.
-function setStatus(v, status) {
-  v.status = status
-  toast(`${v.id} ${status.toLowerCase()}`, status === 'Rejected' ? 'warning' : 'success')
+// approve / reject — but only from someone entitled to decide, and never on
+// their own variation. The server is what enforces that; a 403 here is the
+// real answer, not a hint.
+async function setStatus(v, status) {
+  try {
+    await store.decide(v.id, status, projectId.value)
+    toast(`${v.id} ${status.toLowerCase()}`, status === 'Rejected' ? 'warning' : 'success')
+  } catch (err) {
+    toast(err.message || `${v.id} could not be ${status.toLowerCase()}`, 'warning')
+  }
 }
-function removeVariation(v) {
-  const i = variations.value.findIndex((x) => x.id === v.id)
-  if (i !== -1) variations.value.splice(i, 1)
-  toast(`${v.id} deleted`, 'info')
+
+async function removeVariation(v) {
+  try {
+    await store.remove(v.id)
+    toast(`${v.id} deleted`, 'info')
+  } catch (err) {
+    // An approved variation is part of the cost record — the server refuses and
+    // asks for a reversing variation instead.
+    toast(err.message || `${v.id} could not be deleted`, 'warning')
+  }
+}
+
+async function editVariation(v, patch) {
+  try {
+    await store.update(v.id, patch)
+  } catch (err) {
+    toast(err.message || 'That change could not be saved', 'warning')
+    await store.fetchForProject(projectId.value, { force: true }).catch(() => {})
+  }
+}
+
+/**
+ * The table shows a signed figure; the API takes a positive magnitude plus a
+ * direction. Split it here so the sign the user typed is what gets stored.
+ */
+async function editImpact(v, raw) {
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return
+  await editVariation(v, { impact: Math.abs(n), direction: n < 0 ? 'omit' : 'add' })
 }
 
 const statusMeta = {
@@ -81,7 +129,7 @@ const statusMeta = {
 const filtered = computed(() =>
   filter.value === 'All' ? variations.value : variations.value.filter((v) => v.status === filter.value)
 )
-const netImpact = computed(() => variations.value.filter((v) => v.status === 'Approved').reduce((a, v) => a + v.impact, 0))
+const netImpact = computed(() => store.approvedTotal)
 </script>
 
 <template>
@@ -89,7 +137,7 @@ const netImpact = computed(() => variations.value.filter((v) => v.status === 'Ap
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">Variations</h2>
-        <p class="mt-1 text-brand-muted">Change orders & cost impact · Lekki 4-Bedroom Duplex</p>
+        <p class="mt-1 text-brand-muted">Change orders &amp; cost impact<template v-if="projects.current"> · {{ projects.current.name }}</template></p>
       </div>
       <button class="btn-primary btn-md self-start" @click="openCreate"><Plus class="h-4 w-4" /> New Variation</button>
     </div>
@@ -138,8 +186,10 @@ const netImpact = computed(() => variations.value.filter((v) => v.status === 'Ap
             <span class="text-xs text-brand-light">·</span>
             <span class="text-xs text-brand-muted">{{ v.rev }}</span>
           </div>
-          <input v-model="v.title" class="mt-0.5 w-full rounded-md bg-transparent font-semibold text-secondary hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary" />
-          <p class="text-xs text-brand-light">Raised {{ v.date }} by {{ v.by }}</p>
+          <!-- Committed on change, not per keystroke: each edit is a round trip. -->
+          <input :value="v.title" class="mt-0.5 w-full rounded-md bg-transparent font-semibold text-secondary hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+            @change="editVariation(v, { title: $event.target.value })" />
+          <p class="text-xs text-brand-light">Raised {{ timeAgo(v.date) }} by {{ v.by }}</p>
         </div>
         <div class="flex flex-wrap items-center gap-4">
           <div class="text-right">
@@ -147,8 +197,9 @@ const netImpact = computed(() => variations.value.filter((v) => v.status === 'Ap
             <div class="flex items-center justify-end gap-1 font-bold" :class="v.impact >= 0 ? 'text-danger' : 'text-success'">
               <component :is="v.impact >= 0 ? ArrowUp : ArrowDown" class="h-4 w-4 shrink-0" />
               <span class="text-brand-light">₦</span>
-              <input v-model.number="v.impact" type="number" step="any"
-                class="w-28 rounded-md bg-transparent text-right font-bold hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary" />
+              <input :value="v.impact" type="number" step="any"
+                class="w-28 rounded-md bg-transparent text-right font-bold hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+                @change="editImpact(v, $event.target.value)" />
             </div>
           </div>
           <span class="badge" :class="statusMeta[v.status].c">
@@ -227,7 +278,7 @@ const netImpact = computed(() => variations.value.filter((v) => v.status === 'Ap
 
             <div class="flex gap-2 pt-2">
               <button type="button" class="btn-outline btn-md flex-1" @click="createOpen = false">Cancel</button>
-              <button type="submit" class="btn-primary btn-md flex-1"><Plus class="h-4 w-4" /> Raise variation</button>
+              <button type="submit" class="btn-primary btn-md flex-1" :disabled="saving"><Plus class="h-4 w-4" /> {{ saving ? 'Raising…' : 'Raise variation' }}</button>
             </div>
           </form>
         </div>

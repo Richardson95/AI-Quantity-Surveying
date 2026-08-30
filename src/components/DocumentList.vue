@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import { Download, Trash2, Loader2, CheckCircle2, Eye } from 'lucide-vue-next'
 import { useDocumentsStore } from '@/stores/documents'
 import { useToast } from '@/composables/useToast'
-import { downloadMock } from '@/utils/download'
 
 const props = defineProps({
   scope: { type: String, required: true },
@@ -33,36 +32,38 @@ const kindColor = {
   File: 'bg-brand-border text-brand-muted',
 }
 
-// Re-download the exact bytes when we still hold them; otherwise hand back a
-// readable placeholder rather than a broken link.
-function download(doc) {
-  if (doc.dataUrl) {
-    const a = document.createElement('a')
-    a.href = doc.dataUrl
-    a.download = doc.name
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    toast(`Downloading ${doc.name}`)
+// The bytes come from a short-lived signed URL the store asks the server for.
+// This only follows the link it is given — it never assumes one exists.
+async function download(doc) {
+  const url = await store.downloadUrl(doc)
+  if (!url) {
+    toast(`${doc.name} could not be fetched — try again`, 'warning')
     return
   }
-  downloadMock(
-    `${doc.name}.txt`,
-    `${doc.name}\n\nThis file was uploaded in a previous session and was too large to keep in browser storage.\nRe-upload it to download the original.\n`
-  )
-  toast(`${doc.name} is no longer cached — re-upload to get the original`, 'warning')
+
+  const a = document.createElement('a')
+  a.href = url
+  a.download = doc.name
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  toast(`Downloading ${doc.name}`)
 }
 
-function preview(doc) {
-  if (!doc.dataUrl) {
-    toast('No cached copy to preview — re-upload the file', 'warning')
+async function preview(doc) {
+  const { url, notice } = await store.previewUrl(doc)
+  if (!url) {
+    // There is no server-side renderer for CAD and BIM, and saying so beats
+    // opening a tab that cannot display anything.
+    toast(notice || 'No preview is available for this file', 'warning')
     return
   }
-  window.open(doc.dataUrl, '_blank', 'noopener')
+  window.open(url, '_blank', 'noopener')
 }
 
-function remove(doc) {
-  store.remove(doc.id)
+async function remove(doc) {
+  await store.remove(doc.id)
   toast(`${doc.name} removed`, 'info')
 }
 

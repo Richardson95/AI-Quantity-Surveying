@@ -1,31 +1,64 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { Check, Sparkles, CreditCard, Download, Zap, X, ShieldCheck } from 'lucide-vue-next'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
-import { downloadMock } from '@/utils/download'
-import { useSubscriptionStore, PLANS, TRIAL_DAYS } from '@/stores/subscription'
-import { pay, isConfigured } from '@/utils/paystack'
+import { useSubscriptionStore, PLAN_BLURBS, TRIAL_DAYS } from '@/stores/subscription'
+import { useBillingStore } from '@/stores/billing'
 import { formatFull } from '@/utils/format'
 
 const auth = useAuthStore()
 const { toast } = useToast()
+const route = useRoute()
+const router = useRouter()
 const subscription = useSubscriptionStore()
+const billing = useBillingStore()
 
 const paying = ref('')
 
-onMounted(() => subscription.refresh())
+onMounted(async () => {
+  subscription.refresh()
+  await billing.fetchAll()
 
-const plans = PLANS
-const currentPlan = computed(() => subscription.currentPlan || PLANS[1])
+  // Coming back from Paystack. The reference is in the URL; the server decides
+  // whether it was paid, for how much, and what it bought — the browser only
+  // hands it over.
+  const reference = route.query.reference || route.query.trxref
+  if (reference) {
+    paying.value = 'verifying'
+    try {
+      await billing.verifyPayment(String(reference))
+      toast('Payment confirmed — thank you.')
+    } catch (err) {
+      toast(err.message || 'That payment could not be confirmed', 'warning')
+    } finally {
+      paying.value = ''
+      // Strip the reference so a refresh does not re-verify it.
+      router.replace({ query: {} })
+    }
+  }
+})
+
+// Plans come from the server where it has them, so the price charged and the
+// price shown are the same number.
+const plans = computed(() =>
+  billing.plans.map((p) => ({
+    name: p.name,
+    id: p.id,
+    price: p.price,
+    seats: p.seats ?? 'Unlimited',
+    credits: p.credits ?? 'Unlimited',
+    storage: p.storage,
+    selfServe: p.selfServe,
+    blurb: PLAN_BLURBS[p.name] || '',
+  }))
+)
+const currentPlan = computed(
+  () => plans.value.find((p) => p.name === subscription.plan || p.id === subscription.plan) || null
+)
 
 const planOpen = ref(false)
-const cardOpen = ref(false)
-
-const card = ref({ number: '', name: auth.user.name, expiry: '', cvc: '' })
-const cardOnFile = ref({ last4: '4242', expiry: '08/28' })
-const cardError = ref('')
 
 function manage() {
   planOpen.value = true
@@ -35,7 +68,7 @@ function upgrade() {
 }
 
 async function choosePlan(plan) {
-  if (plan.price === null) {
+  if (plan.price === null || plan.selfServe === false) {
     planOpen.value = false
     toast('Our sales team will contact you about Enterprise', 'info')
     return
@@ -44,87 +77,91 @@ async function choosePlan(plan) {
     toast(`You are already on ${plan.name}`, 'info')
     return
   }
-  if (!isConfigured()) {
-    toast('Payments are not configured yet — add your Paystack public key.', 'warning')
-    return
-  }
   if (paying.value) return
 
+  // The SERVER starts the transaction. It generates the reference, records the
+  // payment as pending against this organization, and decides the amount — so a
+  // tampered browser cannot pay a price it chose. We only follow the
+  // authorization URL it hands back.
+  if (!billing.paystackConfigured) {
+    toast('Payments are not configured on the server yet.', 'warning')
+    return
+  }
+
   paying.value = plan.name
-  const result = await pay({
-    email: auth.user.email,
-    amountNaira: plan.price,
-    purpose: 'SUB',
-    metadata: { plan: plan.name, company: auth.user.company },
-  })
-  paying.value = ''
-
-  if (!result.ok) {
-    if (!result.cancelled) toast(result.error, 'warning')
-    return
+  try {
+    const payment = await billing.startCheckout(plan.id || plan.name.toLowerCase())
+    if (!payment?.authorizationUrl) {
+      toast('Could not start that payment. Please try again.', 'warning')
+      return
+    }
+    window.location.href = payment.authorizationUrl
+  } catch (err) {
+    toast(err.message || 'Could not start that payment', 'warning')
+  } finally {
+    paying.value = ''
   }
-
-  // Only reached once the reference has been verified server-side.
-  subscription.activate({ plan: plan.name, reference: result.reference, amount: plan.price })
-  auth.updateProfile({ plan: plan.name })
-  planOpen.value = false
-  toast(`${plan.name} active — thank you. Renews ${subscription.renewsOn.toLocaleDateString('en-NG')}.`)
 }
 
-function updateCard() {
-  // Card details are entered inside Paystack's own secure popup, never here.
-  planOpen.value = true
-  toast('Choose a plan to pay with — your card is entered securely on Paystack', 'info')
+async function cancelSubscription() {
+  try {
+    const res = await billing.cancel()
+    toast(
+      res.accessUntil
+        ? `Cancelled. Access continues until ${new Date(res.accessUntil).toLocaleDateString('en-NG')}.`
+        : 'Subscription cancelled.',
+      'info'
+    )
+  } catch (err) {
+    toast(err.message || 'That subscription could not be cancelled', 'warning')
+  }
 }
 
-function saveCard() {
-  const digits = card.value.number.replace(/\D/g, '')
-  if (digits.length < 13 || digits.length > 19) {
-    cardError.value = 'Enter a valid card number.'
+async function downloadInvoice(inv) {
+  // The server builds the receipt from the stored payment.
+  const blob = await billing.invoiceUrl(inv.id).catch(() => null)
+  if (!blob) {
+    toast(`${inv.id} could not be fetched`, 'warning')
     return
   }
-  if (!/^(0[1-9]|1[0-2])\/\d{2}$/.test(card.value.expiry)) {
-    cardError.value = 'Expiry must be in MM/YY format.'
-    return
-  }
-  if (!/^\d{3,4}$/.test(card.value.cvc)) {
-    cardError.value = 'CVC must be 3 or 4 digits.'
-    return
-  }
-  cardOnFile.value = { last4: digits.slice(-4), expiry: card.value.expiry }
-  cardOpen.value = false
-  toast('Payment method updated')
-}
-function downloadInvoice(inv) {
-  downloadMock(`${inv.id}.txt`, `Invoice ${inv.id}\nDate: ${inv.date}\nAmount: ₦${inv.amount.toLocaleString()}\nStatus: ${inv.status}\n`)
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${inv.id}.txt`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
   toast(`Downloading ${inv.id}`)
 }
 
-// Allowances follow the plan you are actually on.
-const usage = computed(() => [
-  { label: 'AI Credits', used: 1240, total: currentPlan.value.credits, unit: '' },
-  { label: 'Active Projects', used: 12, total: 'Unlimited', unit: '' },
-  { label: 'Storage', used: 34, total: currentPlan.value.storage, unit: ' GB' },
-  { label: 'Team Seats', used: 5, total: currentPlan.value.seats, unit: '' },
-])
+// Allowances follow the plan you are actually on, and the figures are the ones
+// the server enforces against — an exhausted credit balance is what blocks the
+// next AI call, so the number here and the number there cannot disagree.
+const usage = computed(() => {
+  const u = billing.usage
+  if (!u) return []
+  return [
+    { label: 'AI Credits', used: u.credits.used, total: u.credits.limit ?? 'Unlimited', unit: '' },
+    { label: 'Storage', used: u.storage.usedGb, total: u.storage.limitGb ?? 'Unlimited', unit: ' GB' },
+    { label: 'Team Seats', used: u.seats.used, total: u.seats.limit ?? 'Unlimited', unit: '' },
+  ]
+})
 
-const paidInvoices = computed(() =>
-  subscription.payments.map((p) => ({
+// Only real verified payments appear. An empty list means nothing has been
+// charged yet, which is the truth — it used to show four invented ₦54,000
+// invoices to an account that had never paid anything.
+const invoices = computed(() =>
+  billing.invoices.map((p) => ({
     id: p.id,
-    date: new Date(p.paidAt).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' }),
+    date: p.paidAt
+      ? new Date(p.paidAt).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' })
+      : '—',
     amount: p.amount,
     status: 'Paid',
+    purpose: p.purpose,
   }))
 )
-
-const sampleInvoices = [
-  { id: 'INV-2026-006', date: 'Jun 1, 2026', amount: 54000, status: 'Paid' },
-  { id: 'INV-2026-005', date: 'May 1, 2026', amount: 54000, status: 'Paid' },
-  { id: 'INV-2026-004', date: 'Apr 1, 2026', amount: 54000, status: 'Paid' },
-  { id: 'INV-2026-003', date: 'Mar 1, 2026', amount: 54000, status: 'Paid' },
-]
-
-const invoices = computed(() => (paidInvoices.value.length ? paidInvoices.value : sampleInvoices))
 
 function pct(u, t) {
   return typeof t === 'number' ? Math.round((u / t) * 100) : 0
@@ -176,7 +213,12 @@ function pct(u, t) {
             </p>
           </div>
           <div class="flex gap-2">
-            <button class="btn border border-white/20 text-white hover:bg-white/10 btn-md" @click="manage">Manage</button>
+            <!-- Cancelling is not a refund: access continues to the end of the
+                 period already paid for, which is what the server does. -->
+            <button v-if="subscription.status === 'active'" class="btn border border-white/20 text-white hover:bg-white/10 btn-md" :disabled="billing.working" @click="cancelSubscription">
+              Cancel plan
+            </button>
+            <button v-else class="btn border border-white/20 text-white hover:bg-white/10 btn-md" @click="manage">Manage</button>
             <button class="btn-primary btn-md" @click="upgrade"><Zap class="h-4 w-4" /> Upgrade</button>
           </div>
         </div>
@@ -209,8 +251,8 @@ function pct(u, t) {
               </div>
             </div>
           </div>
-          <button class="btn-outline btn-md mt-4 w-full" @click="updateCard">
-            <CreditCard class="h-4 w-4" /> Change plan or card
+          <button class="btn-outline btn-md mt-4 w-full" @click="planOpen = true">
+            <CreditCard class="h-4 w-4" /> Change plan
           </button>
         </div>
 
@@ -219,13 +261,18 @@ function pct(u, t) {
           <div class="border-b border-brand-border-light p-5">
             <h3 class="font-display font-bold text-secondary">Invoices</h3>
           </div>
-          <div class="divide-y divide-brand-border-light">
+          <p v-if="!invoices.length" class="px-5 py-12 text-center text-sm text-brand-muted">
+            No payments yet. Invoices appear here once a charge has been verified.
+          </p>
+          <div v-else class="divide-y divide-brand-border-light">
             <div v-for="inv in invoices" :key="inv.id" class="flex flex-col gap-3 px-5 py-3.5 hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
               <div class="flex min-w-0 flex-1 items-center gap-4">
-                <div class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-dark text-xs font-bold">PDF</div>
+                <div class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary-dark text-xs font-bold">TXT</div>
                 <div class="min-w-0">
                   <p class="truncate font-mono text-sm font-semibold text-secondary">{{ inv.id }}</p>
-                  <p class="text-xs text-brand-light">{{ inv.date }}</p>
+                  <p class="text-xs text-brand-light">
+                    {{ inv.date }}<template v-if="inv.purpose"> · {{ inv.purpose.replace(/_/g, ' ') }}</template>
+                  </p>
                 </div>
               </div>
               <div class="flex items-center gap-3 pl-[52px] sm:pl-0">
@@ -247,7 +294,13 @@ function pct(u, t) {
             <h3 class="font-display text-lg font-bold text-secondary">Change your plan</h3>
             <button class="btn btn-ghost btn-sm" @click="planOpen = false"><X class="h-5 w-5" /></button>
           </div>
-          <div class="grid flex-1 gap-4 overflow-y-auto p-6 sm:grid-cols-3">
+          <div class="flex-1 overflow-y-auto p-6">
+          <!-- The server flags its own prices as placeholders; carry that
+               through rather than presenting them as settled. -->
+          <p v-for="n in billing.planNotes" :key="n.text" class="mb-4 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-brand-muted">
+            {{ n.text }}
+          </p>
+          <div class="grid gap-4 sm:grid-cols-3">
             <div v-for="p in plans" :key="p.name" class="card flex flex-col p-5"
               :class="subscription.status === 'active' && p.name === subscription.plan ? 'ring-2 ring-primary' : ''">
               <h4 class="font-display font-bold text-secondary">{{ p.name }}</h4>
@@ -271,34 +324,10 @@ function pct(u, t) {
               </button>
             </div>
           </div>
+          </div>
         </div>
       </div>
     </transition>
 
-    <!-- Update card -->
-    <transition name="page">
-      <div v-if="cardOpen" class="fixed inset-0 z-[60] flex items-center justify-center bg-secondary/50 p-4 backdrop-blur-sm" @click.self="cardOpen = false">
-        <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-card-hover">
-          <div class="flex items-center justify-between border-b border-brand-border-light px-6 py-4">
-            <h3 class="font-display text-lg font-bold text-secondary">Update payment method</h3>
-            <button class="btn btn-ghost btn-sm" @click="cardOpen = false"><X class="h-5 w-5" /></button>
-          </div>
-          <form class="space-y-4 p-6" @submit.prevent="saveCard">
-            <div><label class="label">Card number</label><input v-model="card.number" class="input" placeholder="4242 4242 4242 4242" inputmode="numeric" /></div>
-            <div><label class="label">Name on card</label><input v-model="card.name" class="input" /></div>
-            <div class="grid grid-cols-2 gap-4">
-              <div><label class="label">Expiry</label><input v-model="card.expiry" class="input" placeholder="MM/YY" /></div>
-              <div><label class="label">CVC</label><input v-model="card.cvc" class="input" placeholder="123" inputmode="numeric" /></div>
-            </div>
-            <p v-if="cardError" class="text-sm font-medium text-danger">{{ cardError }}</p>
-            <p class="text-xs text-brand-light">Demo only — card details are not sent anywhere and no charge is made.</p>
-            <div class="flex gap-2 pt-1">
-              <button type="button" class="btn-outline btn-md flex-1" @click="cardOpen = false">Cancel</button>
-              <button type="submit" class="btn-primary btn-md flex-1"><CreditCard class="h-4 w-4" /> Save card</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </transition>
   </div>
 </template>

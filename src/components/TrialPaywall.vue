@@ -3,9 +3,9 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Lock, Check, Sparkles, CreditCard, ShieldCheck, LogOut } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { useSubscriptionStore, PLANS, TRIAL_DAYS } from '@/stores/subscription'
+import { useSubscriptionStore, PLAN_BLURBS, TRIAL_DAYS } from '@/stores/subscription'
+import { useBillingStore } from '@/stores/billing'
 import { useToast } from '@/composables/useToast'
-import { pay, isConfigured } from '@/utils/paystack'
 import { formatFull } from '@/utils/format'
 
 // ---------------------------------------------------------------------------
@@ -18,41 +18,47 @@ import { formatFull } from '@/utils/format'
 
 const auth = useAuthStore()
 const subscription = useSubscriptionStore()
+const billing = useBillingStore()
 const { toast } = useToast()
 const router = useRouter()
 
 const paying = ref('')
 const visible = computed(() => !subscription.hasAccess)
 
+// Plans, prices and allowances all come from the server — the same figures it
+// charges against. Nothing here is quoted from the browser.
+const plans = computed(() =>
+  billing.plans.map((p) => ({ ...p, blurb: PLAN_BLURBS[p.name] || '' }))
+)
+
+watch(visible, (v) => { if (v && !billing.plans.length) billing.fetchPlans() }, { immediate: true })
+
 async function choosePlan(plan) {
-  if (plan.price === null) {
+  if (plan.price === null || plan.selfServe === false) {
     toast('Our sales team will contact you about Enterprise', 'info')
     return
   }
-  if (!isConfigured()) {
-    toast('Payments are not configured yet — add your Paystack public key.', 'warning')
+  if (!billing.paystackConfigured) {
+    toast('Payments are not configured on the server yet.', 'warning')
     return
   }
   if (paying.value) return
 
+  // The server starts the transaction and decides the amount; we only follow
+  // the authorization URL it returns.
   paying.value = plan.name
-  const result = await pay({
-    email: auth.user.email,
-    amountNaira: plan.price,
-    purpose: 'SUB',
-    metadata: { plan: plan.name, company: auth.user.company },
-  })
-  paying.value = ''
-
-  if (!result.ok) {
-    if (!result.cancelled) toast(result.error, 'warning')
-    return
+  try {
+    const payment = await billing.startCheckout(plan.id || plan.name.toLowerCase())
+    if (!payment?.authorizationUrl) {
+      toast('Could not start that payment. Please try again.', 'warning')
+      return
+    }
+    window.location.href = payment.authorizationUrl
+  } catch (err) {
+    toast(err.message || 'Could not start that payment', 'warning')
+  } finally {
+    paying.value = ''
   }
-
-  // Only reached once the reference has been verified server-side.
-  subscription.activate({ plan: plan.name, reference: result.reference, amount: plan.price })
-  auth.updateProfile({ plan: plan.name })
-  toast(`${plan.name} active — welcome back.`)
 }
 
 function signOut() {
@@ -118,7 +124,7 @@ onBeforeUnmount(() => {
       <!-- Plans -->
       <div class="grid gap-4 p-6 sm:p-8 lg:grid-cols-3">
         <div
-          v-for="p in PLANS"
+          v-for="p in plans"
           :key="p.name"
           class="card flex flex-col p-5"
           :class="p.name === 'Professional' ? 'ring-2 ring-primary' : ''"
@@ -133,8 +139,8 @@ onBeforeUnmount(() => {
             <span v-if="p.price !== null" class="text-sm font-medium text-brand-light">/mo</span>
           </p>
           <ul class="mt-4 flex-1 space-y-2 text-sm text-brand-muted">
-            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.credits }} AI credits / month</li>
-            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.seats }} team seats</li>
+            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.credits ?? 'Unlimited' }} AI credits / month</li>
+            <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.seats ?? 'Unlimited' }} team seats</li>
             <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> {{ p.storage }} GB storage</li>
             <li class="flex items-start gap-2"><Check class="mt-0.5 h-4 w-4 shrink-0 text-success" /> Unlimited projects &amp; BOQs</li>
           </ul>

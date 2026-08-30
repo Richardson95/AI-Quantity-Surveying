@@ -1,10 +1,13 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { Database, Search, Plus, TrendingUp, TrendingDown, Package, HardHat, Wrench, Upload, Globe, Trash2, X } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
+import { useRatesStore } from '@/stores/rates'
 import { normalizeUnit, COMMON_UNITS } from '@/utils/units'
 
 const { toast } = useToast()
+const store = useRatesStore()
+
 const query = ref('')
 const category = ref('All')
 const categories = ['All', 'Materials', 'Labour', 'Equipment']
@@ -12,28 +15,31 @@ const categories = ['All', 'Materials', 'Labour', 'Equipment']
 const iconFor = { Materials: Package, Labour: HardHat, Equipment: Wrench }
 
 const region = ref('Lagos')
-const regions = ['Lagos', 'Abuja', 'Port Harcourt', 'Kano']
+// Regions come from the server: the factors and benchmarks live in a table an
+// administrator edits, not in this file.
+const regions = computed(() =>
+  store.regions.map((r) => r.name)
+)
 
-const items = ref([
-  { id: 1, name: 'Portland Cement (50kg bag)', cat: 'Materials', unit: 'bag', rate: 9500, change: 4.2, region: 'Lagos', icon: Package },
-  { id: 2, name: 'Sharp Sand', cat: 'Materials', unit: 'm³', rate: 18000, change: -1.5, region: 'Lagos', icon: Package },
-  { id: 3, name: 'Granite (3/4")', cat: 'Materials', unit: 'm³', rate: 42000, change: 6.8, region: 'Lagos', icon: Package },
-  { id: 4, name: 'Y16 Reinforcement Bar', cat: 'Materials', unit: 'tonne', rate: 980000, change: 2.1, region: 'Lagos', icon: Package },
-  { id: 5, name: 'Sandcrete Block (9")', cat: 'Materials', unit: 'no', rate: 480, change: 0, region: 'Lagos', icon: Package },
-  { id: 6, name: 'Mason (skilled)', cat: 'Labour', unit: 'day', rate: 12000, change: 8.3, region: 'Lagos', icon: HardHat },
-  { id: 7, name: 'Labourer (unskilled)', cat: 'Labour', unit: 'day', rate: 6500, change: 3.0, region: 'Lagos', icon: HardHat },
-  { id: 8, name: 'Steel Fixer', cat: 'Labour', unit: 'day', rate: 14000, change: 5.5, region: 'Lagos', icon: HardHat },
-  { id: 9, name: 'Concrete Mixer (hire)', cat: 'Equipment', unit: 'day', rate: 25000, change: -2.4, region: 'Lagos', icon: Wrench },
-  { id: 10, name: 'Poker Vibrator (hire)', cat: 'Equipment', unit: 'day', rate: 15000, change: 1.2, region: 'Lagos', icon: Wrench },
-])
+const items = computed(() => store.rates)
+
+onMounted(async () => {
+  await Promise.all([
+    store.fetch({ region: region.value }).catch((e) => toast(e.message, 'warning')),
+    store.fetchRegions(),
+  ])
+})
+
+// Rates are regional, so changing region re-reads the library rather than
+// filtering a list that only ever held one region's prices.
+watch(region, (r) => store.fetch({ region: r, force: true }).catch(() => {}))
 
 const catColor = { Materials: 'bg-primary/10 text-primary', Labour: 'bg-success/10 text-success', Equipment: 'bg-warning/10 text-warning' }
-
-let rateId = 100
 
 // Adding a rate used to drop a blank "New rate item" row on the table and
 // leave you to find it. Ask for the details up front instead.
 const addOpen = ref(false)
+const saving = ref(false)
 const draft = ref(blankRate())
 const draftError = ref('')
 
@@ -48,7 +54,8 @@ function openAddRate() {
   addOpen.value = true
 }
 
-function addRate() {
+async function addRate() {
+  if (saving.value) return
   const name = draft.value.name.trim()
   if (!name) {
     draftError.value = 'Give the item a name.'
@@ -67,67 +74,79 @@ function addRate() {
     return
   }
 
-  items.value.unshift({
-    id: ++rateId,
-    name,
-    cat: draft.value.cat,
-    unit: normalizeUnit(draft.value.unit),
-    rate: Number(draft.value.rate),
-    change: 0,
-    region: region.value,
-    icon: iconFor[draft.value.cat],
-  })
-  query.value = ''
-  category.value = 'All'
-  addOpen.value = false
-  toast(`${name} added at ₦${Number(draft.value.rate).toLocaleString()}/${draft.value.unit.trim()}`)
+  saving.value = true
+  try {
+    await store.create({
+      name,
+      cat: draft.value.cat,
+      unit: draft.value.unit,
+      rate: Number(draft.value.rate),
+      region: region.value,
+    })
+    query.value = ''
+    category.value = 'All'
+    addOpen.value = false
+    toast(`${name} added at ₦${Number(draft.value.rate).toLocaleString()}/${normalizeUnit(draft.value.unit)}`)
+  } catch (err) {
+    draftError.value = err.message || 'That rate could not be added.'
+  } finally {
+    saving.value = false
+  }
 }
 
-function removeRate(item) {
-  const i = items.value.findIndex((x) => x.id === item.id)
-  if (i !== -1) items.value.splice(i, 1)
-  toast(`Removed ${item.name}`, 'info')
+async function editRate(item, patch) {
+  try {
+    await store.update(item.id, patch)
+  } catch (err) {
+    toast(err.message || 'That rate could not be updated', 'warning')
+    await store.fetch({ region: region.value, force: true }).catch(() => {})
+  }
 }
 
-// Importing reads a real CSV: name,category,unit,rate
+async function removeRate(item) {
+  try {
+    await store.remove(item.id)
+    toast(`Removed ${item.name}`, 'info')
+  } catch (err) {
+    // Curated global market rates belong to everyone; the server refuses.
+    toast(err.message || `${item.name} could not be removed`, 'warning')
+  }
+}
+
+// Importing hands the CSV to the server, which parses it and reports every row
+// it could not read rather than silently dropping any.
 const fileInput = ref(null)
+const importing = ref(false)
+
 function importLibrary() {
   fileInput.value?.click()
 }
-function onLibraryPicked(e) {
+
+async function onLibraryPicked(e) {
   const file = e.target.files?.[0]
   e.target.value = ''
   if (!file) return
-  const reader = new FileReader()
-  reader.onload = () => {
-    const lines = String(reader.result).split(/\r?\n/).filter((l) => l.trim())
-    if (!lines.length) {
-      toast('That file was empty', 'warning')
-      return
+
+  importing.value = true
+  try {
+    const res = await store.importCsv(file)
+    for (const r of (res.rejected || []).slice(0, 3)) {
+      toast(`Row ${r.row} skipped — ${r.reason}`, 'warning')
     }
-    // Skip a header row if it looks like one.
-    if (/name/i.test(lines[0]) && /rate|price/i.test(lines[0])) lines.shift()
-    let added = 0
-    for (const line of lines) {
-      const [name, cat, unit, rate] = line.split(',').map((c) => (c || '').trim())
-      if (!name) continue
-      const normalised = ['Materials', 'Labour', 'Equipment'].includes(cat) ? cat : 'Materials'
-      items.value.unshift({
-        id: ++rateId,
-        name,
-        cat: normalised,
-        unit: normalizeUnit(unit) || 'no',
-        rate: Number(String(rate).replace(/[^0-9.]/g, '')) || 0,
-        // Imported libraries spell units many ways; normalise on the way in.
-        change: 0,
-        region: region.value,
-        icon: iconFor[normalised],
-      })
-      added++
+    if ((res.rejected || []).length > 3) {
+      toast(`…and ${res.rejected.length - 3} more rows skipped`, 'warning')
     }
-    toast(added ? `${added} rates imported from ${file.name}` : 'No usable rows found in that file', added ? 'success' : 'warning')
+    toast(
+      res.imported
+        ? `${res.imported} rate${res.imported > 1 ? 's' : ''} imported from ${file.name}`
+        : 'No usable rows found in that file',
+      res.imported ? 'success' : 'warning'
+    )
+  } catch (err) {
+    toast(err.message || 'That file could not be imported', 'warning')
+  } finally {
+    importing.value = false
   }
-  reader.readAsText(file)
 }
 
 const filtered = computed(() => items.value.filter((i) => {
@@ -155,7 +174,7 @@ const filtered = computed(() => items.value.filter((i) => {
           </select>
         </div>
         <input ref="fileInput" type="file" accept=".csv,.txt" class="hidden" @change="onLibraryPicked" />
-        <button class="btn-outline btn-md" @click="importLibrary"><Upload class="h-4 w-4" /> Import library</button>
+        <button class="btn-outline btn-md" :disabled="importing" @click="importLibrary"><Upload class="h-4 w-4" /> {{ importing ? 'Importing…' : 'Import library' }}</button>
         <button class="btn-primary btn-md" @click="openAddRate"><Plus class="h-4 w-4" /> Add rate</button>
       </div>
     </div>
@@ -190,45 +209,66 @@ const filtered = computed(() => items.value.filter((i) => {
             </tr>
           </thead>
           <tbody>
+            <!-- A curated global market rate belongs to every account, so only
+                 the firm's own schedule is editable. The server refuses either
+                 way; showing it read-only is the honest presentation. -->
             <tr v-for="i in filtered" :key="i.id" class="group border-b border-brand-border-light last:border-0 hover:bg-brand-bg">
               <td class="px-5 py-3">
                 <div class="flex items-center gap-3">
-                  <div :class="catColor[i.cat]" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg"><component :is="i.icon" class="h-4 w-4" /></div>
-                  <input v-model="i.name" class="w-full min-w-0 rounded-md bg-transparent font-medium text-secondary hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary" />
+                  <div :class="catColor[i.cat]" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg"><component :is="iconFor[i.cat] || Package" class="h-4 w-4" /></div>
+                  <div class="min-w-0 flex-1">
+                    <input v-if="store.editable(i)" :value="i.name" class="w-full min-w-0 rounded-md bg-transparent font-medium text-secondary hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+                      @change="editRate(i, { name: $event.target.value })" />
+                    <p v-else class="truncate font-medium text-secondary">{{ i.name }}</p>
+                  </div>
                 </div>
               </td>
               <td class="px-3 py-3">
-                <select v-model="i.cat" class="chip border-0 focus:outline-none focus:ring-2 focus:ring-primary/30" :class="catColor[i.cat]" @change="i.icon = iconFor[i.cat]">
+                <select v-if="store.editable(i)" :value="i.cat" class="chip border-0 focus:outline-none focus:ring-2 focus:ring-primary/30" :class="catColor[i.cat]"
+                  @change="editRate(i, { cat: $event.target.value })">
                   <option v-for="c in categories.slice(1)" :key="c" :value="c">{{ c }}</option>
                 </select>
+                <span v-else class="chip" :class="catColor[i.cat]">{{ i.cat }}</span>
               </td>
               <td class="px-3 py-3 text-brand-muted">
-                <input v-model="i.unit" list="unit-options" class="w-16 rounded-md bg-transparent hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
-                  @change="i.unit = normalizeUnit(i.unit)" />
+                <input v-if="store.editable(i)" :value="i.unit" list="unit-options" class="w-16 rounded-md bg-transparent hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+                  @change="editRate(i, { unit: $event.target.value })" />
+                <span v-else>{{ i.unit }}</span>
               </td>
               <td class="px-3 py-3 text-right font-bold text-secondary">
                 <span class="text-brand-light">₦</span>
-                <input v-model.number="i.rate" type="number" min="0" step="any" class="w-28 rounded-md bg-transparent text-right font-bold hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary" />
+                <input v-if="store.editable(i)" :value="i.rate" type="number" min="0" step="any" class="w-28 rounded-md bg-transparent text-right font-bold hover:bg-white focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+                  @change="editRate(i, { rate: $event.target.value })" />
+                <span v-else>{{ i.rate.toLocaleString() }}</span>
               </td>
               <td class="px-3 py-3 text-right">
-                <span v-if="i.change === 0" class="text-sm text-brand-light">—</span>
+                <!-- No earlier reading is not the same as "flat", so it reads
+                     as unknown rather than 0%. -->
+                <span v-if="!i.hasHistory" class="text-sm text-brand-light" title="No earlier price recorded">—</span>
+                <span v-else-if="i.change === 0" class="text-sm text-brand-muted">0%</span>
                 <span v-else class="inline-flex items-center gap-1 text-sm font-semibold" :class="i.change > 0 ? 'text-danger' : 'text-success'">
                   <component :is="i.change > 0 ? TrendingUp : TrendingDown" class="h-4 w-4" />
                   {{ Math.abs(i.change) }}%
                 </span>
               </td>
               <td class="px-5 py-3 text-right">
-                <button class="grid h-8 w-8 place-items-center rounded-lg text-brand-light opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
+                <button v-if="store.editable(i)" class="grid h-8 w-8 place-items-center rounded-lg text-brand-light opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
                   title="Delete rate" @click="removeRate(i)"><Trash2 class="h-4 w-4" /></button>
+                <span v-else class="text-[11px] text-brand-light" title="Curated market rate — shared by every account">Global</span>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p v-if="!filtered.length" class="px-5 py-14 text-center text-sm text-brand-muted">
+      <p v-if="store.loading && !filtered.length" class="px-5 py-14 text-center text-sm text-brand-muted">
+        Loading the rate library…
+      </p>
+      <p v-else-if="!filtered.length" class="px-5 py-14 text-center text-sm text-brand-muted">
         No rates match your search. Add one, or import a CSV library.
       </p>
     </div>
+
+
 
     <!-- Add rate -->
     <transition name="page">
@@ -264,7 +304,9 @@ const filtered = computed(() => items.value.filter((i) => {
             <p v-if="draftError" class="text-sm font-medium text-danger">{{ draftError }}</p>
             <div class="flex gap-2 pt-2">
               <button type="button" class="btn-outline btn-md flex-1" @click="addOpen = false">Cancel</button>
-              <button type="submit" class="btn-primary btn-md flex-1"><Plus class="h-4 w-4" /> Add rate</button>
+              <button type="submit" class="btn-primary btn-md flex-1" :disabled="saving">
+                <Plus class="h-4 w-4" /> {{ saving ? 'Adding…' : 'Add rate' }}
+              </button>
             </div>
           </form>
         </div>

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { Search, Plus, MapPin, LayoutGrid, List, X } from 'lucide-vue-next'
 import { useProjectsStore } from '@/stores/projects'
@@ -10,8 +10,13 @@ const store = useProjectsStore()
 const router = useRouter()
 const { toast } = useToast()
 
+onMounted(() => {
+  store.fetchProjects().catch((e) => toast(e.message, 'warning'))
+})
+
 // Creating a project used to silently make an "Untitled Project". Ask instead.
 const createOpen = ref(false)
+const saving = ref(false)
 const draft = ref(blankDraft())
 const draftError = ref('')
 
@@ -27,7 +32,8 @@ function openCreate() {
   createOpen.value = true
 }
 
-function newProject() {
+async function newProject() {
+  if (saving.value) return
   if (!draft.value.name.trim()) {
     draftError.value = 'Give the project a name.'
     return
@@ -40,16 +46,25 @@ function newProject() {
     draftError.value = 'Budget cannot be negative.'
     return
   }
-  const p = store.addProject({
-    name: draft.value.name.trim(),
-    client: draft.value.client.trim(),
-    location: draft.value.location.trim() || 'Lagos, Nigeria',
-    type: draft.value.type,
-    budget: Number(draft.value.budget) || 0,
-  })
-  createOpen.value = false
-  toast(`${p.name} created — opening details`)
-  router.push(`/app/projects/${p.id}`)
+
+  saving.value = true
+  try {
+    const p = await store.addProject({
+      name: draft.value.name.trim(),
+      client: draft.value.client.trim(),
+      location: draft.value.location.trim() || 'Lagos, Nigeria',
+      type: draft.value.type,
+      budget: Number(draft.value.budget) || 0,
+    })
+    createOpen.value = false
+    toast(`${p.name} created — opening details`)
+    router.push(`/app/projects/${p.id}`)
+  } catch (err) {
+    // The server's own message names the field it rejected.
+    draftError.value = err.message || 'That project could not be created.'
+  } finally {
+    saving.value = false
+  }
 }
 const query = ref('')
 const filter = ref('All')
@@ -170,9 +185,19 @@ const filtered = computed(() =>
         </RouterLink>
       </div>
 
-      <div v-if="filtered.length === 0" class="card grid place-items-center py-20 text-center">
-        <p class="font-semibold text-secondary">No projects found</p>
-        <p class="mt-1 text-sm text-brand-muted">Try adjusting your search or filters.</p>
+      <div v-if="store.loading && !store.projects.length" class="card grid place-items-center py-20 text-center">
+        <p class="font-semibold text-secondary">Loading your projects…</p>
+      </div>
+
+      <div v-else-if="filtered.length === 0" class="card grid place-items-center py-20 text-center">
+        <p class="font-semibold text-secondary">
+          {{ store.projects.length ? 'No projects found' : 'No projects yet' }}
+        </p>
+        <p class="mt-1 text-sm text-brand-muted">
+          {{ store.projects.length
+            ? 'Try adjusting your search or filters.'
+            : 'Create one, then upload its drawings to get a bill of quantities.' }}
+        </p>
         <button class="btn-primary btn-md mt-5" @click="openCreate"><Plus class="h-4 w-4" /> New Project</button>
       </div>
     </div>
@@ -203,8 +228,10 @@ const filtered = computed(() =>
             </div>
             <p v-if="draftError" class="text-sm font-medium text-danger">{{ draftError }}</p>
             <div class="flex gap-2 pt-2">
-              <button type="button" class="btn-outline btn-md flex-1" @click="createOpen = false">Cancel</button>
-              <button type="submit" class="btn-primary btn-md flex-1"><Plus class="h-4 w-4" /> Create project</button>
+              <button type="button" class="btn-outline btn-md flex-1" :disabled="saving" @click="createOpen = false">Cancel</button>
+              <button type="submit" class="btn-primary btn-md flex-1" :disabled="saving">
+                <Plus class="h-4 w-4" /> {{ saving ? 'Creating…' : 'Create project' }}
+              </button>
             </div>
           </form>
         </div>

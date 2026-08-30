@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 
-// Global, app-wide toast queue (mock feedback for actions without a backend yet)
+// Global, app-wide toast queue.
 const state = reactive({ toasts: [] })
 let nextId = 0
 

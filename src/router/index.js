@@ -35,7 +35,10 @@ const routes = [
     children: [
       { path: 'login', name: 'login', component: () => import('@/views/auth/LoginView.vue') },
       { path: 'signup', name: 'signup', component: () => import('@/views/auth/SignupView.vue') },
+      // Also the landing page for the emailed reset link (?token=…).
       { path: 'reset', name: 'reset', component: () => import('@/views/auth/ResetView.vue') },
+      // Where an invited teammate lands from their invitation email (?token=…).
+      { path: 'accept-invite', name: 'accept-invite', component: () => import('@/views/auth/AcceptInviteView.vue') },
     ],
   },
 
@@ -67,7 +70,11 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  // BuildQ is served under a sub-path of the BRG Prime site
+  // (https://brgprime.com/boq), so every route is relative to that prefix.
+  // BASE_URL comes from `base` in vite.config.js, which keeps the router and
+  // the built asset paths in sync — set it in one place, not two.
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) return savedPosition
@@ -78,12 +85,25 @@ const router = createRouter({
 
 // Keep signed-out users out of the workspace, and signed-in users out of the
 // auth screens. `redirect` lets us return to the page that was asked for.
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
+
+  // With a backend, a hard refresh knows only that a token exists — not whether
+  // it is still valid, nor what the subscription says. Waiting for the server
+  // here stops a signed-in user being bounced to the login screen, and stops
+  // the workspace rendering for a moment before the paywall catches up.
+  if (!auth.ready) await auth.fetchMe()
+
   if (to.matched.some((r) => r.meta.requiresAuth) && !auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
-  if (to.matched.some((r) => r.meta.guestOnly) && auth.isAuthenticated) {
+  // A page reached by a one-time emailed token stays reachable even with a
+  // session already open: someone signed in on one account may legitimately be
+  // following an invitation to another, and a reset link must work when a
+  // stale session is what sent them looking for it in the first place.
+  const carriesToken = Boolean(to.query.token)
+
+  if (to.matched.some((r) => r.meta.guestOnly) && auth.isAuthenticated && !carriesToken) {
     return { name: 'dashboard' }
   }
 

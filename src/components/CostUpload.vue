@@ -1,11 +1,13 @@
 <script setup>
 import { ref } from 'vue'
 import { UploadCloud, Loader2, FileSpreadsheet, Download } from 'lucide-vue-next'
-import { useCostsStore, parseCostCsv } from '@/stores/costs'
+import { useCostsStore } from '@/stores/costs'
+import { useProjectsStore } from '@/stores/projects'
 import { useToast } from '@/composables/useToast'
-import { downloadMock } from '@/utils/download'
+import { downloadFile } from '@/utils/download'
 
 const costs = useCostsStore()
+const projects = useProjectsStore()
 const { toast } = useToast()
 
 const input = ref(null)
@@ -27,16 +29,29 @@ async function handleFiles(fileList) {
       toast(`${file.name}: upload a CSV export of your priced schedule`, 'warning')
       continue
     }
-    const text = await file.text()
-    const { rows, errors } = parseCostCsv(text)
+    if (!projects.currentProjectId) {
+      toast('Open a project first — cost data is priced against one', 'warning')
+      continue
+    }
 
-    // Surface only the first couple of row problems; a bad file can produce many.
-    errors.slice(0, 2).forEach((e) => toast(e, 'warning'))
-    if (errors.length > 2) toast(`…and ${errors.length - 2} more rows skipped`, 'warning')
-
-    if (rows.length) {
-      const n = costs.importRows(rows, file.name)
-      toast(`${n} cost line${n > 1 ? 's' : ''} imported from ${file.name}`)
+    // The server parses the file and reports every row it could not read, so
+    // nothing is silently dropped.
+    try {
+      const res = await costs.importFile(file, projects.currentProjectId)
+      for (const r of (res.rejected || []).slice(0, 2)) {
+        toast(`Row ${r.row} skipped — ${r.reason}`, 'warning')
+      }
+      if ((res.rejected || []).length > 2) {
+        toast(`…and ${res.rejected.length - 2} more rows skipped`, 'warning')
+      }
+      toast(
+        res.imported
+          ? `${res.imported} cost line${res.imported > 1 ? 's' : ''} imported from ${file.name}`
+          : `No usable rows found in ${file.name}`,
+        res.imported ? 'success' : 'warning'
+      )
+    } catch (err) {
+      toast(err.message || `${file.name} could not be imported`, 'warning')
     }
   }
 
@@ -58,7 +73,7 @@ async function onDrop(e) {
 
 // A template removes the guesswork about what the file should look like.
 function downloadTemplate() {
-  downloadMock(
+  downloadFile(
     'BuildQ-cost-template.csv',
     [
       'Item,Section,Unit,Qty,Rate',

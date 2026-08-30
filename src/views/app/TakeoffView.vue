@@ -1,12 +1,13 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Ruler, Square, Box, Hash, MousePointer2, ZoomIn, ZoomOut, Layers, Sparkles, Plus, Trash2, Upload, X } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useDocumentsStore } from '@/stores/documents'
 import { useProjectsStore } from '@/stores/projects'
-import { measurementsToBoqItems, numericValue } from '@/utils/takeoff'
-import { detectFrom, hasAnalysisEngine, SOURCE_LABELS } from '@/services/analysis'
+import { useTakeoffStore } from '@/stores/takeoff'
+import { numericValue } from '@/utils/takeoff'
+import { SOURCE_LABELS } from '@/services/analysis'
 import FileDropzone from '@/components/FileDropzone.vue'
 import DocumentList from '@/components/DocumentList.vue'
 
@@ -14,14 +15,29 @@ const router = useRouter()
 const { toast } = useToast()
 const documents = useDocumentsStore()
 const projects = useProjectsStore()
+const takeoff = useTakeoffStore()
 
 // Takeoff measures the same project's drawings the BOQ workspace uses.
-const PROJECT_ID = 'PRJ-1042'
+const projectId = computed(() => projects.currentProjectId)
 const dropzone = ref(null)
 const selectedDocId = ref('')
 const plansOpen = ref(false)
 
-const plans = computed(() => documents.drawingsFor(PROJECT_ID))
+async function loadProject(id) {
+  if (!id) return
+  await Promise.all([
+    documents.fetchForScope(id).catch(() => {}),
+    takeoff.fetchForProject(id).catch((e) => toast(e.message, 'warning')),
+  ])
+}
+
+onMounted(async () => {
+  await projects.ensureProject()
+  await loadProject(projectId.value)
+})
+watch(projectId, (id) => loadProject(id))
+
+const plans = computed(() => documents.drawingsFor(projectId.value))
 const activePlan = computed(
   () => plans.value.find((d) => d.id === selectedDocId.value) || plans.value[0] || null
 )
@@ -36,14 +52,9 @@ const tools = [
   { id: 'count', name: 'Count', icon: Hash },
 ]
 
-let mId = 5
-const measurements = ref([
-  { id: 1, name: 'Ground floor slab', type: 'Area', value: '186.4 m²', color: '#1CA5F6', auto: true },
-  { id: 2, name: 'External wall run', type: 'Linear', value: '68.2 m', color: '#2DC875', auto: true },
-  { id: 3, name: 'Foundation concrete', type: 'Volume', value: '42.1 m³', color: '#FFA726', auto: false },
-  { id: 4, name: 'Window openings', type: 'Count', value: '14 no', color: '#E63946', auto: true },
-  { id: 5, name: 'Internal partitions', type: 'Linear', value: '94.6 m', color: '#6DCBFB', auto: true },
-])
+// Measurements belong to the project, not this screen — the BOQ import reads
+// the same rows, so they cannot be a local copy that drifts.
+const measurements = computed(() => takeoff.measurements)
 
 // The active tool decides what a new measurement is, and which unit it carries.
 const toolMeta = {
@@ -72,35 +83,41 @@ function selectPlan(doc) {
   toast(`Switched to ${doc.name}`, 'info')
 }
 
-const detecting = ref(false)
-const detectSource = ref(hasAnalysisEngine() ? 'engine' : 'stand-in')
+const detecting = computed(() => takeoff.detecting)
+// 'engine' once the engine has actually read this project's drawings.
+const detectSource = computed(() => takeoff.source || 'none')
 const detectProvenance = computed(() => SOURCE_LABELS[detectSource.value])
 
-// Detection reads the plan that is actually open. Previously it appended two
-// fixed rows and then reported "no new quantities" on every later click.
+// Detection reads the plan that is actually open. The store replaces the
+// figures previously detected from that same plan and keeps anything measured
+// by hand, so a re-run never discards the user's own work.
 async function autoDetect() {
-  if (detecting.value) return
+  if (takeoff.detecting) return
   if (!activePlan.value) {
     toast('Upload a plan first — measurements are detected from it', 'warning')
     plansOpen.value = true
     return
   }
+  if (activePlan.value.status === 'Analyzing') {
+    toast(`${activePlan.value.name} is still being read — try again in a moment`, 'info')
+    return
+  }
 
-  detecting.value = true
   toast(`Reading ${activePlan.value.name}…`, 'info')
+  const result = await takeoff.detect(activePlan.value, projectId.value)
+  if (!result) return
 
-  const result = await detectFrom(activePlan.value)
-  // Replace previous auto-detections for this plan; keep anything measured by
-  // hand so a re-run never discards the user's own work.
-  const manual = measurements.value.filter((m) => !m.auto || m.source !== activePlan.value.name)
-  measurements.value = [...manual, ...result.measurements.map((f) => ({ ...f, id: ++mId }))]
-  detectSource.value = result.source
-  detecting.value = false
-
-  result.warnings.forEach((w) => toast(w, 'warning'))
-  if (result.degraded) toast('Analysis engine unavailable — showing template figures', 'warning')
+  ;(result.warnings || []).forEach((w) => toast(w, 'warning'))
+  if (result.failed) {
+    toast(result.failed, 'warning')
+    return
+  }
+  const n = (result.measurements || []).length
   toast(
-    `${result.measurements.length} quantities ${result.source === 'engine' ? 'measured from' : 'estimated for'} ${activePlan.value.name}`
+    n
+      ? `${n} quantities measured from ${activePlan.value.name}`
+      : `Nothing measurable was found on ${activePlan.value.name}`,
+    n ? 'success' : 'warning'
   )
 }
 
@@ -122,9 +139,11 @@ function openAddMeasurement() {
 }
 
 const unitForType = { Linear: 'm', Area: 'm²', Volume: 'm³', Count: 'no' }
-const colorForType = { Linear: '#2DC875', Area: '#1CA5F6', Volume: '#FFA726', Count: '#E63946' }
 
-function addMeasurement() {
+const saving = ref(false)
+
+async function addMeasurement() {
+  if (saving.value) return
   const name = draft.value.name.trim()
   if (!name) {
     draftError.value = 'Name the measurement.'
@@ -134,32 +153,46 @@ function addMeasurement() {
     draftError.value = 'Enter the measured value.'
     return
   }
-  const unit = unitForType[draft.value.type]
-  measurements.value.push({
-    id: ++mId,
-    name,
-    type: draft.value.type,
-    value: `${Number(draft.value.value)} ${unit}`,
-    color: colorForType[draft.value.type],
-    auto: false,
-  })
-  addOpen.value = false
-  toast(`${name} added — ${Number(draft.value.value)} ${unit}`)
+  // A measurement is recorded against a drawing, so one has to be open.
+  if (!activePlan.value) {
+    draftError.value = 'Open a plan first — a measurement is recorded against one.'
+    return
+  }
+
+  saving.value = true
+  try {
+    const unit = unitForType[draft.value.type]
+    await takeoff.add(
+      { name, type: draft.value.type, value: draft.value.value },
+      { documentId: activePlan.value?.id, projectId: projectId.value }
+    )
+    addOpen.value = false
+    toast(`${name} added — ${Number(draft.value.value)} ${unit}`)
+  } catch (err) {
+    draftError.value = err.message || 'That measurement could not be saved.'
+  } finally {
+    saving.value = false
+  }
 }
 
 // Canvas clicks still add a quick entry without interrupting the flow.
-function quickAddMeasurement() {
+async function quickAddMeasurement() {
   const meta = activeMeta.value || toolMeta.area
+  if (!activePlan.value) {
+    toast('Open a plan first — a measurement is recorded against one', 'warning')
+    plansOpen.value = true
+    return
+  }
   const n = measurements.value.filter((m) => m.type === meta.type).length + 1
-  measurements.value.push({
-    id: ++mId,
-    name: meta.type + ' measurement ' + n,
-    type: meta.type,
-    value: '0.0 ' + meta.unit,
-    color: meta.color,
-    auto: false,
-  })
-  toast(`${meta.type} measurement added — set its value on the right`)
+  try {
+    await takeoff.add(
+      { name: meta.type + ' measurement ' + n, type: meta.type, value: 0 },
+      { documentId: activePlan.value?.id, projectId: projectId.value }
+    )
+    toast(`${meta.type} measurement added — set its value on the right`)
+  } catch (err) {
+    toast(err.message || 'That measurement could not be saved', 'warning')
+  }
 }
 
 // Clicking the canvas with a measurement tool selected drops a new entry.
@@ -168,36 +201,54 @@ function onCanvasClick() {
   quickAddMeasurement()
 }
 
-function removeMeasurement(m) {
-  const i = measurements.value.findIndex((x) => x.id === m.id)
-  if (i !== -1) measurements.value.splice(i, 1)
+async function removeMeasurement(m) {
+  await takeoff.remove(m)
   toast('Removed ' + m.name, 'info')
 }
 
+/**
+ * Correcting a detected figure makes it yours: the store and the server both
+ * drop its confidence and its "AI" badge, because it is no longer the number
+ * the engine measured.
+ */
+async function editMeasurement(m, field, value) {
+  try {
+    await takeoff.update(m.id, { [field]: value })
+  } catch (err) {
+    toast(err.message || 'That change could not be saved', 'warning')
+    await takeoff.fetchForProject(projectId.value, { force: true }).catch(() => {})
+  }
+}
+
 // This used to navigate and claim success without touching the BOQ at all.
-function syncToBoq() {
+const syncing = ref(false)
+
+async function syncToBoq() {
+  if (syncing.value) return
   if (!measurements.value.length) {
     toast('Nothing to sync — detect or add a measurement first', 'warning')
     return
   }
 
-  const { items, skipped } = measurementsToBoqItems(measurements.value)
-  if (!items.length) {
-    toast('Every measurement is still zero — set their values first', 'warning')
-    return
+  syncing.value = true
+  try {
+    // The server prices each measurement against the rate library and refuses
+    // to bill a length at an area rate, reporting what it skipped and why.
+    const res = await projects.importMeasurements([], projectId.value)
+    for (const sk of res.skipped || []) {
+      toast(`Skipped "${sk.name}" — ${sk.reason}`, 'warning')
+    }
+    if (!res.imported) {
+      toast('None of those measurements could be priced', 'warning')
+      return
+    }
+    toast(`${res.imported} measurement${res.imported > 1 ? 's' : ''} added to the BOQ`)
+    router.push('/app/boq')
+  } catch (err) {
+    toast(err.message || 'Those measurements could not be added to the BOQ', 'warning')
+  } finally {
+    syncing.value = false
   }
-
-  // Append to the BOQ rather than replacing it, so a generated BOQ survives.
-  for (const item of items) {
-    const created = projects.addBoqItem(item.section)
-    projects.updateBoqItem(created.id, item)
-  }
-
-  if (skipped.length) {
-    toast(`${skipped.length} zero-value measurement${skipped.length > 1 ? 's' : ''} skipped`, 'warning')
-  }
-  toast(`${items.length} measurement${items.length > 1 ? 's' : ''} added to the BOQ`)
-  router.push('/app/boq')
 }
 </script>
 
@@ -231,13 +282,13 @@ function syncToBoq() {
         <h3 class="font-display font-bold text-secondary">Plans &amp; Drawings</h3>
         <button class="text-sm font-semibold text-primary hover:underline" @click="plansOpen = false">Hide</button>
       </div>
-      <FileDropzone ref="dropzone" :scope="PROJECT_ID" compact label="Drop a plan to measure" @uploaded="onPlanUploaded" />
+      <FileDropzone ref="dropzone" :scope="projectId" compact label="Drop a plan to measure" @uploaded="onPlanUploaded" />
       <p class="text-xs font-semibold uppercase tracking-wider text-brand-light">
         Uploaded plans
         <span v-if="plans.length" class="text-brand-muted">· {{ plans.length }}</span>
       </p>
       <DocumentList
-        :scope="PROJECT_ID"
+        :scope="projectId"
         drawings-only
         selectable
         :selected-id="activePlan ? activePlan.id : ''"
@@ -305,25 +356,41 @@ function syncToBoq() {
           <button class="grid h-8 w-8 place-items-center rounded-lg bg-primary/10 text-primary hover:bg-primary/20" title="Add a measurement" @click="openAddMeasurement"><Plus class="h-4 w-4" /></button>
         </div>
         <div class="flex-1 space-y-2 p-4">
+          <p v-if="takeoff.loading && !measurements.length" class="py-10 text-center text-sm text-brand-muted">
+            Loading measurements…
+          </p>
+          <p v-else-if="!measurements.length" class="rounded-xl border border-dashed border-brand-border-light px-3 py-10 text-center text-sm text-brand-muted">
+            Nothing measured yet. Auto-detect from an open plan, or add a measurement by hand.
+          </p>
+
           <div v-for="m in measurements" :key="m.id" class="group rounded-xl border border-brand-border-light p-3 transition-colors hover:border-primary/30">
             <div class="flex items-center gap-2">
               <span class="h-3 w-3 shrink-0 rounded-full" :style="{ background: m.color }"></span>
-              <input v-model="m.name" class="min-w-0 flex-1 truncate rounded-md bg-transparent text-sm font-semibold text-secondary hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary" />
-              <span v-if="m.auto" class="badge shrink-0 bg-primary/10 text-[10px] text-primary-dark">AI</span>
+              <!-- Edits are committed on change, not on every keystroke — each
+                   one is a round trip to the server. -->
+              <input :value="m.name" class="min-w-0 flex-1 truncate rounded-md bg-transparent text-sm font-semibold text-secondary hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+                @change="editMeasurement(m, 'name', $event.target.value)" />
+              <span v-if="m.auto" class="badge shrink-0 bg-primary/10 text-[10px] text-primary-dark" title="Detected by the analysis engine">AI</span>
               <button class="grid h-6 w-6 shrink-0 place-items-center rounded-md text-brand-light opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
                 title="Remove measurement" @click="removeMeasurement(m)"><Trash2 class="h-3.5 w-3.5" /></button>
             </div>
-            <div class="mt-2 flex items-center justify-between">
+            <div class="mt-2 flex items-center justify-between gap-2">
               <span class="chip" :class="typeColor[m.type]">{{ m.type }}</span>
-              <input v-model="m.value" class="w-24 rounded-md bg-transparent text-right font-bold text-secondary hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary" />
+              <div class="flex items-center gap-1.5">
+                <input :value="m.numeric" type="number" min="0" step="any"
+                  class="w-20 rounded-md bg-transparent text-right font-bold text-secondary hover:bg-brand-bg focus:bg-white focus:outline-none focus:ring-1 focus:ring-primary"
+                  @change="editMeasurement(m, 'value', $event.target.value)" />
+                <span class="w-8 text-xs text-brand-muted">{{ m.unit }}</span>
+              </div>
             </div>
+            <p v-if="m.source" class="mt-1.5 truncate text-[11px] text-brand-light" :title="m.source">from {{ m.source }}</p>
           </div>
         </div>
         <div class="border-t border-brand-border-light p-4">
           <p class="mb-2 text-center text-xs text-brand-muted">
             {{ syncable }} of {{ measurements.length }} measurement{{ measurements.length === 1 ? '' : 's' }} ready to price
           </p>
-          <button class="btn-primary btn-md w-full" :disabled="!syncable" @click="syncToBoq">Sync to BOQ</button>
+          <button class="btn-primary btn-md w-full" :disabled="!syncable || syncing" @click="syncToBoq">{{ syncing ? 'Syncing…' : 'Sync to BOQ' }}</button>
         </div>
       </div>
     </div>

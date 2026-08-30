@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import {
   ArrowLeft, MapPin, Building2, Calendar, FileSpreadsheet,
@@ -9,7 +9,6 @@ import AreaChart from '@/components/charts/AreaChart.vue'
 import { useProjectsStore } from '@/stores/projects'
 import { useDocumentsStore } from '@/stores/documents'
 import { useToast } from '@/composables/useToast'
-import { downloadMock } from '@/utils/download'
 import { formatMoney } from '@/utils/format'
 import FileDropzone from '@/components/FileDropzone.vue'
 import DocumentList from '@/components/DocumentList.vue'
@@ -20,14 +19,42 @@ const documents = useDocumentsStore()
 const { toast } = useToast()
 // A bad id must say so — silently showing a different project is worse than a 404.
 const project = computed(() => store.projects.find((p) => p.id === route.params.id) || null)
+const loading = ref(true)
 
-function exportProject() {
-  downloadMock(`${project.value.name} — Summary.txt`)
-  toast('Project summary exported')
+async function load(id) {
+  if (!id) return
+  loading.value = true
+  try {
+    await store.fetchProject(id)
+    if (store.byId(id)) {
+      // Opening a project makes it the one every other screen works against.
+      store.selectProject(id)
+      await Promise.all([store.fetchActivity(id), documents.fetchForScope(id)])
+    }
+  } finally {
+    loading.value = false
+  }
 }
-function downloadDoc(doc) {
-  downloadMock(`${doc.name}.${doc.type.toLowerCase()}`)
-  toast(`Downloading ${doc.name}`)
+
+onMounted(() => load(route.params.id))
+watch(() => route.params.id, (id) => load(id))
+
+async function exportProject() {
+  // The server renders the bill it actually holds.
+  const blob = await store.exportBoq(route.params.id)
+  if (!blob) {
+    toast('There is no bill to export yet', 'warning')
+    return
+  }
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${project.value.name} — BOQ.csv`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  toast('Bill of quantities exported')
 }
 
 const statusColor = {
@@ -37,19 +64,37 @@ const statusColor = {
   'On Hold': 'bg-brand-border text-brand-muted',
 }
 
-const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
-const spend = [{ label: 'Cumulative spend', data: [20, 42, 60, 85, 105, 121].map((n) => n * 1_000_000), color: '#1CA5F6' }]
+// Spend history. The server builds this from approved variations — it is the
+// only dated cost movement the system actually records — and says so in its
+// own notes. With no data there is nothing to plot, and an invented curve is
+// worse than an empty chart.
+const spendSeries = ref(null)
 
-const docs = [
-  { name: 'Architectural Drawings Rev C', type: 'PDF', size: '12.4 MB', date: 'Jun 9' },
-  { name: 'Structural Plans', type: 'DWG', size: '8.1 MB', date: 'Jun 7' },
-  { name: 'Substructure BOQ', type: 'XLSX', size: '420 KB', date: 'Jun 5' },
-  { name: 'Material Specifications', type: 'PDF', size: '2.2 MB', date: 'Jun 2' },
-]
+watch(project, async (p) => {
+  if (!p) return
+  spendSeries.value = await store.fetchSpend(p.id)
+}, { immediate: true })
+
+const months = computed(() => (spendSeries.value?.series || []).map((s) => s.month))
+const spend = computed(() => [
+  {
+    label: 'Cumulative spend',
+    data: (spendSeries.value?.series || []).map((s) => s.cumulative),
+    color: '#1CA5F6',
+  },
+])
+const spendNotes = computed(() => spendSeries.value?.notes || [])
+const hasSpend = computed(() => months.value.length > 0)
 </script>
 
 <template>
-  <div v-if="!project" class="card grid place-items-center px-6 py-20 text-center">
+  <!-- Wait for the server before deciding a project does not exist; otherwise
+       a hard refresh flashes "not found" on a project that is perfectly fine. -->
+  <div v-if="loading && !project" class="card grid place-items-center px-6 py-20 text-center">
+    <p class="font-semibold text-secondary">Loading project…</p>
+  </div>
+
+  <div v-else-if="!project" class="card grid place-items-center px-6 py-20 text-center">
     <div class="grid h-14 w-14 place-items-center rounded-2xl bg-brand-bg text-brand-light"><FolderSearch class="h-6 w-6" /></div>
     <p class="mt-4 font-semibold text-secondary">Project not found</p>
     <p class="mt-1 max-w-sm text-sm text-brand-muted">
@@ -114,7 +159,11 @@ const docs = [
       <div class="card p-6 lg:col-span-2">
         <h3 class="mb-1 font-display text-lg font-bold text-secondary">Spend Tracking</h3>
         <p class="mb-4 text-sm text-brand-muted">Cumulative project expenditure</p>
-        <AreaChart :labels="months" :datasets="spend" currency :height="280" />
+        <AreaChart v-if="hasSpend" :labels="months" :datasets="spend" currency :height="280" />
+        <p v-else class="grid h-[280px] place-content-center rounded-xl border border-dashed border-brand-border-light px-6 text-center text-sm text-brand-muted">
+          No dated spend has been recorded for this project yet.
+        </p>
+        <p v-for="n in spendNotes" :key="n.text" class="mt-3 text-xs text-brand-light">{{ n.text }}</p>
       </div>
 
       <!-- Team + quick links -->
@@ -171,17 +220,6 @@ const docs = [
         />
       </div>
 
-      <p class="mb-2 mt-8 text-xs font-semibold uppercase tracking-wider text-brand-light">Sample project files</p>
-      <div class="grid gap-3 sm:grid-cols-2">
-        <div v-for="d in docs" :key="d.name" class="flex items-center gap-3 rounded-xl border border-brand-border-light p-3 transition-colors hover:border-primary/30 hover:bg-brand-bg">
-          <div class="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-xs font-bold text-primary-dark">{{ d.type }}</div>
-          <div class="min-w-0 flex-1">
-            <p class="truncate text-sm font-semibold text-secondary">{{ d.name }}</p>
-            <p class="text-xs text-brand-light">{{ d.size }} · {{ d.date }}</p>
-          </div>
-          <button class="grid h-8 w-8 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary" @click="downloadDoc(d)"><Download class="h-4 w-4" /></button>
-        </div>
-      </div>
     </div>
   </div>
 </template>

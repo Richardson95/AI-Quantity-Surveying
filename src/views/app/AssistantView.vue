@@ -1,22 +1,33 @@
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { Sparkles, Send, Paperclip, FileSpreadsheet, Calculator, Lightbulb, ShieldCheck, User } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
+import { useAssistantStore } from '@/stores/assistant'
+import { useProjectsStore } from '@/stores/projects'
 
 const { toast } = useToast()
 const auth = useAuthStore()
+const store = useAssistantStore()
+const projects = useProjectsStore()
+
 const firstName = auth.user.name.split(' ')[0]
 const input = ref('')
-const sending = ref(false)
 const messagesEl = ref(null)
 
-const messages = ref([
-  {
-    role: 'ai',
-    text: `Hi ${firstName} 👋 I'm your AI Construction Assistant. I can help you generate BOQs, estimate quantities, compare market rates and suggest cost savings. What would you like to work on?`,
-  },
-])
+const messages = computed(() => store.messages)
+const sending = computed(() => store.sending)
+
+// The assistant answers about ONE project — it is handed that project's bill,
+// takeoff, drawings and rate library, and told to answer from them.
+const projectId = computed(() => projects.currentProjectId)
+
+onMounted(async () => {
+  store.greet(firstName)
+  await Promise.all([store.checkStatus(), projects.ensureProject()])
+  store.fetchThreads()
+  scrollDown()
+})
 
 const prompts = [
   { icon: FileSpreadsheet, text: 'Generate a BOQ for a 4-bedroom duplex' },
@@ -25,35 +36,24 @@ const prompts = [
   { icon: ShieldCheck, text: 'Compare cost with Lagos market rates' },
 ]
 
-const cannedReply = (q) => {
-  if (/reinforcement|steel/i.test(q))
-    return "For a typical 4-bedroom duplex (≈340 m² built-up), expect roughly **18–22 tonnes** of reinforcement at an average ratio of 105 kg/m³ of concrete. At current Lagos rates (₦980,000/tonne) that's approximately **₦19.6M**. Want me to break it down by element (foundation, columns, slabs)?"
-  if (/boq|duplex/i.test(q))
-    return "I can generate that. Based on a standard 4-bedroom duplex I'd produce sections for Substructure, Superstructure, Roofing, Finishes and Services — about 120 line items totalling **≈₦185M** at Lagos rates. Upload your floor plans and I'll extract exact quantities, or I can start from a template. Which would you prefer?"
-  if (/cost-saving|alternative|saving/i.test(q))
-    return "Three high-impact options for this project: 1) Switch suspended slab to **ribbed/clay-pot** — saves ≈₦3.2M in concrete & steel. 2) Use **locally-sourced granite** instead of imported — saves ≈₦1.8M. 3) Standardise window sizes to reduce aluminium wastage — saves ≈₦600K. Net potential saving: **₦5.6M (~3%)**."
-  if (/market|rate|lagos|compare/i.test(q))
-    return "Your current estimate of **₦185.2M** is **4.2% below** the Lagos regional benchmark of ₦193.4M for comparable duplexes — a competitive tender position. The main variance is in finishes, where you're 9% under market. Shall I generate a benchmark comparison report?"
-  return "Good question. I'd analyse your uploaded drawings and specifications to give a precise answer. In the meantime, I can outline the methodology, applicable RICS/NIQS measurement rules, and a ballpark figure. Would you like me to proceed?"
-}
-
 async function scrollDown() {
   await nextTick()
   if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
 }
 
-function send(text) {
+async function send(text) {
   const q = (text ?? input.value).trim()
-  if (!q || sending.value) return
-  messages.value.push({ role: 'user', text: q })
+  if (!q || store.sending) return
   input.value = ''
-  sending.value = true
+  // The reply streams in, so scroll on every chunk rather than once at the end.
+  await store.send(q, { projectId: projectId.value, onChunk: scrollDown })
+  if (store.error) toast(store.error, 'warning')
+}
+
+function newConversation() {
+  store.newThread()
+  store.greet(firstName)
   scrollDown()
-  setTimeout(() => {
-    messages.value.push({ role: 'ai', text: cannedReply(q) })
-    sending.value = false
-    scrollDown()
-  }, 1100)
 }
 
 // Anything a user types reaches v-html, so escape first and only then allow
@@ -92,17 +92,33 @@ function render(t) {
     <!-- Header -->
     <div class="mb-4 flex items-center gap-3">
       <div class="grid h-11 w-11 place-items-center rounded-xl bg-brand-gradient text-white shadow-card"><Sparkles class="h-5 w-5" /></div>
-      <div>
+      <div class="min-w-0 flex-1">
         <h2 class="font-display text-xl font-bold text-secondary">AI Construction Assistant</h2>
+        <!-- Say plainly whether a real model is answering. A canned reply
+             dressed as "Online" is the kind of thing that ends up in a tender. -->
         <p class="flex items-center gap-1.5 text-sm text-brand-muted">
-          <span class="h-2 w-2 rounded-full bg-success"></span> Online · powered by BuildQ AI
+          <span class="h-2 w-2 shrink-0 rounded-full" :class="store.available ? 'bg-success' : 'bg-warning'"></span>
+          <span class="truncate">
+            <template v-if="store.available">
+              Grounded in
+              <template v-if="projects.current">{{ projects.current.name }}</template>
+              <template v-else>your workspace data</template>
+            </template>
+            <template v-else-if="!store.statusChecked">Checking the engine…</template>
+            <template v-else>The AI engine is not configured — no answers available</template>
+          </span>
         </p>
       </div>
+      <button v-if="messages.length > 1" class="btn-ghost btn-sm shrink-0" @click="newConversation">
+        New chat
+      </button>
     </div>
 
     <!-- Messages -->
     <div ref="messagesEl" class="card flex-1 space-y-5 overflow-y-auto p-5">
-      <div v-for="(m, i) in messages" :key="i" class="flex gap-3" :class="m.role === 'user' ? 'flex-row-reverse' : ''">
+      <!-- An assistant bubble exists from the moment the request goes out; it
+           only appears once there is something in it. -->
+      <div v-for="(m, i) in messages" :key="i" v-show="m.role !== 'ai' || m.text" class="flex gap-3" :class="m.role === 'user' ? 'flex-row-reverse' : ''">
         <div class="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-white"
           :class="m.role === 'ai' ? 'bg-brand-gradient' : 'bg-secondary'">
           <component :is="m.role === 'ai' ? Sparkles : User" class="h-4 w-4" />
@@ -113,8 +129,9 @@ function render(t) {
         </div>
       </div>
 
-      <!-- Typing -->
-      <div v-if="sending" class="flex gap-3">
+      <!-- Typing. Once text starts arriving the bubble itself is the feedback,
+           so the dots only show while we are still waiting for the first token. -->
+      <div v-if="sending && !store.streaming" class="flex gap-3">
         <div class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-brand-gradient text-white"><Sparkles class="h-4 w-4" /></div>
         <div class="flex items-center gap-1 rounded-2xl bg-brand-bg px-4 py-4">
           <span class="h-2 w-2 animate-bounce rounded-full bg-brand-light" style="animation-delay: 0ms"></span>

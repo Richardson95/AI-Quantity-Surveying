@@ -37,15 +37,20 @@ function browse() {
 async function handleFiles(fileList) {
   if (!fileList || !fileList.length) return
   busy.value = true
-  const { added, errors } = await docs.addFiles(fileList, { scope: props.scope })
+  const { added, errors, notices } = await docs.addFiles(fileList, { scope: props.scope })
   busy.value = false
 
   errors.forEach((e) => toast(e, 'warning'))
+  // A stored file the engine cannot read says so, rather than appearing to be
+  // under analysis forever.
+  ;(notices || []).forEach((n) => toast(n, 'warning'))
+
   if (added.length) {
+    const analysing = added.filter((d) => d.status === 'Analyzing').length
     toast(
       added.length === 1
-        ? `${added[0].name} uploaded — analyzing`
-        : `${added.length} files uploaded — analyzing`
+        ? `${added[0].name} uploaded${added[0].status === 'Analyzing' ? ' — analyzing' : ''}`
+        : `${added.length} files uploaded${analysing ? ` — analyzing ${analysing}` : ''}`
     )
     emit('uploaded', added)
   }

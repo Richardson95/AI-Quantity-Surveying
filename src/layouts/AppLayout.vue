@@ -11,12 +11,15 @@ import TrialPaywall from '@/components/TrialPaywall.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProjectsStore } from '@/stores/projects'
 import { useSubscriptionStore, TRIAL_DAYS } from '@/stores/subscription'
+import { useReportsStore } from '@/stores/reports'
+import { timeAgo } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const projects = useProjectsStore()
 const subscription = useSubscriptionStore()
+const reports = useReportsStore()
 
 // Colour the countdown by how close the trial is to running out.
 const trialBanner = computed(() => {
@@ -35,21 +38,24 @@ const trialBanner = computed(() => {
 const sidebarOpen = ref(false)
 const userMenu = ref(false)
 const notifMenu = ref(false)
-const hasUnread = ref(true)
 
-const notifications = [
-  { id: 1, title: 'BOQ generation complete', detail: 'Lekki 4-Bedroom Duplex · Substructure', time: '12 min ago' },
-  { id: 2, title: 'Variation VO-014 approved', detail: 'Tunde James approved a change order', time: '3 hours ago' },
-  { id: 3, title: 'Price alert', detail: 'Cement rate up 4.2% in Lagos', time: 'Yesterday' },
-]
+// Real notifications only: an analysis that finished, a payment that settled.
+const notifications = computed(() => reports.notifications)
+const hasUnread = computed(() => reports.hasUnread)
+
+onMounted(() => {
+  reports.fetchNotifications()
+})
 
 const notifWrap = ref(null)
 const userWrap = ref(null)
 
 function toggleNotif() {
   notifMenu.value = !notifMenu.value
-  if (notifMenu.value) hasUnread.value = false
-  if (notifMenu.value) userMenu.value = false
+  if (notifMenu.value) {
+    userMenu.value = false
+    reports.fetchNotifications().then(() => reports.markAllRead())
+  }
 }
 function toggleUser() {
   userMenu.value = !userMenu.value
@@ -298,10 +304,11 @@ function logout() {
                 <p class="text-sm font-semibold text-secondary">Notifications</p>
               </div>
               <div class="max-h-80 divide-y divide-brand-border-light overflow-y-auto">
+                <p v-if="!notifications.length" class="px-4 py-8 text-center text-sm text-brand-muted">Nothing new.</p>
                 <div v-for="n in notifications" :key="n.id" class="px-4 py-3 transition-colors hover:bg-brand-bg">
                   <p class="text-sm font-semibold text-secondary">{{ n.title }}</p>
                   <p class="mt-0.5 text-xs text-brand-muted">{{ n.detail }}</p>
-                  <p class="mt-0.5 text-[11px] text-brand-light">{{ n.time }}</p>
+                  <p class="mt-0.5 text-[11px] text-brand-light">{{ n.time || timeAgo(n.createdAt) }}</p>
                 </div>
               </div>
             </div>

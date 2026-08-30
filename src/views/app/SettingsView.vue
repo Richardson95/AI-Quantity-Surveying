@@ -51,8 +51,11 @@ const form = ref(blankForm())
 const passwords = ref({ current: '', next: '', confirm: '' })
 const errors = ref('')
 
+const saving = ref(false)
+
 // Every field on every tab is persisted — previously only the name survived.
-function save() {
+async function save() {
+  if (saving.value) return
   errors.value = ''
   if (!form.value.name.trim()) {
     errors.value = 'Your name cannot be empty.'
@@ -62,37 +65,61 @@ function save() {
     errors.value = 'Enter a valid email address.'
     return
   }
-  if (tab.value === 'security' && (passwords.value.next || passwords.value.confirm || passwords.value.current)) {
-    if (passwords.value.next.length < 8) {
-      errors.value = 'New password must be at least 8 characters.'
-      return
-    }
-    if (passwords.value.next !== passwords.value.confirm) {
-      errors.value = 'The new passwords do not match.'
-      return
-    }
-    passwords.value = { current: '', next: '', confirm: '' }
-    toast('Password updated')
-  }
 
-  auth.updateProfile({
-    name: form.value.name.trim(),
-    email: form.value.email.trim(),
-    role: form.value.role,
-    company: form.value.company,
-    phone: form.value.phone,
-  })
-
-  const { name, email, role, company, phone, ...prefs } = form.value
+  saving.value = true
   try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
-  } catch {
-    /* storage unavailable — keep in-memory only */
-  }
+    // A password change is a real one: the server checks the current password,
+    // rehashes it and retires every outstanding token. This used to toast
+    // success without changing anything.
+    if (tab.value === 'security' && (passwords.value.next || passwords.value.confirm || passwords.value.current)) {
+      if (!passwords.value.current) {
+        errors.value = 'Enter your current password.'
+        return
+      }
+      if (passwords.value.next.length < 8) {
+        errors.value = 'New password must be at least 8 characters.'
+        return
+      }
+      if (passwords.value.next !== passwords.value.confirm) {
+        errors.value = 'The new passwords do not match.'
+        return
+      }
+      try {
+        await auth.changePassword(passwords.value.current, passwords.value.next)
+        passwords.value = { current: '', next: '', confirm: '' }
+        toast('Password updated')
+      } catch (err) {
+        errors.value = err.message || 'That password could not be changed.'
+        return
+      }
+    }
 
-  saved.value = true
-  toast('Changes saved')
-  setTimeout(() => (saved.value = false), 2000)
+    try {
+      await auth.updateProfile({
+        name: form.value.name.trim(),
+        email: form.value.email.trim(),
+        role: form.value.role,
+        company: form.value.company,
+        phone: form.value.phone,
+      })
+    } catch (err) {
+      errors.value = err.message || 'Those details could not be saved.'
+      return
+    }
+
+    const { name, email, role, company, phone, ...prefs } = form.value
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+    } catch {
+      /* storage unavailable — keep in-memory only */
+    }
+
+    saved.value = true
+    toast('Changes saved')
+    setTimeout(() => (saved.value = false), 2000)
+  } finally {
+    saving.value = false
+  }
 }
 
 function cancel() {
@@ -106,7 +133,7 @@ const photoInput = ref(null)
 function changePhoto() {
   photoInput.value?.click()
 }
-function onPhotoPicked(e) {
+async function onPhotoPicked(e) {
   const file = e.target.files?.[0]
   e.target.value = ''
   if (!file) return
@@ -114,12 +141,15 @@ function onPhotoPicked(e) {
     toast('Choose an image file', 'warning')
     return
   }
-  const reader = new FileReader()
-  reader.onload = () => {
-    auth.updateProfile({ photo: reader.result })
+
+  // The photo is uploaded and served from storage, so it follows the account to
+  // another browser instead of living in this one's localStorage.
+  try {
+    await auth.uploadPhoto(file)
     toast('Profile photo updated')
+  } catch (err) {
+    toast(err.message || 'That photo could not be uploaded', 'warning')
   }
-  reader.readAsDataURL(file)
 }
 </script>
 
@@ -203,7 +233,7 @@ function onPhotoPicked(e) {
           <p v-if="errors" class="mr-auto text-sm font-medium text-danger">{{ errors }}</p>
           <span v-if="saved" class="flex items-center gap-1.5 text-sm font-medium text-success"><Check class="h-4 w-4" /> Saved</span>
           <button class="btn-outline btn-md" @click="cancel">Cancel</button>
-          <button class="btn-primary btn-md" @click="save">Save changes</button>
+          <button class="btn-primary btn-md" :disabled="saving" @click="save">{{ saving ? 'Saving…' : 'Save changes' }}</button>
         </div>
       </div>
     </div>

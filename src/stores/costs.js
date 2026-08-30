@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { api, ApiError } from '@/services/api'
 import { normalizeUnit } from '@/utils/units'
 
 // ---------------------------------------------------------------------------
@@ -9,112 +10,18 @@ import { normalizeUnit } from '@/utils/units'
 // and need to price against those instead of, or alongside, the model. This
 // store holds cost lines imported from a CSV so they can be compared with the
 // AI figure and pushed into the rate analysis.
+//
+// The CSV is parsed server-side and the lines belong to a project, so they
+// survive a cleared browser and are visible to the whole team. Nothing is
+// seeded — every line here was uploaded by the firm itself.
 // ---------------------------------------------------------------------------
-
-const COSTS_KEY = 'buildq.costs'
-
-// Header aliases, so a file does not have to match one exact layout.
-const FIELD_ALIASES = {
-  item: ['item', 'description', 'desc', 'work item', 'particulars', 'name'],
-  unit: ['unit', 'uom', 'units'],
-  rate: ['rate', 'price', 'unit rate', 'unit price', 'cost', 'amount/unit'],
-  qty: ['qty', 'quantity', 'quantities', 'no', 'number'],
-  section: ['section', 'category', 'element', 'trade', 'group'],
-}
-
-/** Split one CSV line, honouring quoted fields containing commas. */
-export function splitCsvLine(line) {
-  const out = []
-  let cur = ''
-  let quoted = false
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i]
-    if (quoted) {
-      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++ }
-      else if (c === '"') quoted = false
-      else cur += c
-    } else if (c === '"') {
-      quoted = true
-    } else if (c === ',' || c === ';' || c === '\t') {
-      out.push(cur.trim())
-      cur = ''
-    } else {
-      cur += c
-    }
-  }
-  out.push(cur.trim())
-  return out
-}
-
-function toNumber(v) {
-  // Tolerate "₦1,250.00", "1 250", "(500)" and similar.
-  const s = String(v || '').replace(/[^\d.\-]/g, '')
-  const n = Number(s)
-  return Number.isFinite(n) ? n : 0
-}
-
-/**
- * Parse a cost CSV into structured lines.
- * Returns { rows, errors, mapped } — `mapped` reports which columns were used.
- */
-export function parseCostCsv(text) {
-  const lines = String(text).split(/\r?\n/).filter((l) => l.trim())
-  if (!lines.length) return { rows: [], errors: ['The file is empty.'], mapped: {} }
-
-  const header = splitCsvLine(lines[0]).map((h) => h.toLowerCase().trim())
-  const mapped = {}
-  for (const [field, aliases] of Object.entries(FIELD_ALIASES)) {
-    const idx = header.findIndex((h) => aliases.includes(h))
-    if (idx !== -1) mapped[field] = idx
-  }
-
-  // Without a header we fall back to positional columns: item, unit, rate, qty.
-  const hasHeader = mapped.item !== undefined || mapped.rate !== undefined
-  const body = hasHeader ? lines.slice(1) : lines
-  const cols = hasHeader ? mapped : { item: 0, unit: 1, rate: 2, qty: 3 }
-
-  const rows = []
-  const errors = []
-
-  body.forEach((line, n) => {
-    const cells = splitCsvLine(line)
-    const item = (cells[cols.item] || '').trim()
-    if (!item) return
-
-    const rate = toNumber(cells[cols.rate])
-    if (!(rate > 0)) {
-      errors.push(`Row ${n + (hasHeader ? 2 : 1)}: "${item}" has no usable rate — skipped.`)
-      return
-    }
-
-    rows.push({
-      item,
-      // Imported files use every spelling under the sun; store one.
-      unit: normalizeUnit(cells[cols.unit]) || 'no',
-      rate,
-      qty: cols.qty !== undefined ? toNumber(cells[cols.qty]) : 0,
-      section: cols.section !== undefined ? (cells[cols.section] || '').trim() : '',
-    })
-  })
-
-  if (!rows.length && !errors.length) errors.push('No priced rows were found in that file.')
-  return { rows, errors, mapped: cols }
-}
-
-function load() {
-  try {
-    const raw = localStorage.getItem(COSTS_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-
-let seq = Date.now()
 
 export const useCostsStore = defineStore('costs', {
   state: () => ({
-    lines: load(),
+    lines: [],
+    loading: false,
+    error: null,
+    loadedProjectId: null,
   }),
   getters: {
     count: (s) => s.lines.length,
@@ -132,44 +39,69 @@ export const useCostsStore = defineStore('costs', {
     },
   },
   actions: {
-    importRows(rows, source) {
-      const added = rows.map((r) => ({
-        id: 'CST-' + (++seq).toString(36).toUpperCase(),
-        ...r,
-        source,
-        uploadedAt: new Date().toISOString(),
-      }))
-      this.lines = [...added, ...this.lines]
-      this._persist()
-      return added.length
-    },
-    update(id, patch) {
-      const line = this.lines.find((l) => l.id === id)
-      if (!line) return
-      if (patch.rate != null) patch.rate = Math.max(0, Number(patch.rate) || 0)
-      if (patch.qty != null) patch.qty = Math.max(0, Number(patch.qty) || 0)
-      if (patch.unit != null) patch.unit = normalizeUnit(patch.unit)
-      Object.assign(line, patch)
-      this._persist()
-    },
-    remove(id) {
-      this.lines = this.lines.filter((l) => l.id !== id)
-      this._persist()
-    },
-    removeSource(source) {
-      this.lines = this.lines.filter((l) => l.source !== source)
-      this._persist()
-    },
-    clear() {
-      this.lines = []
-      this._persist()
-    },
-    _persist() {
+    async fetchForProject(projectId, { force = false } = {}) {
+      if (!projectId) return this.lines
+      if (this.loadedProjectId === projectId && !force) return this.lines
+
+      this.loading = true
+      this.error = null
       try {
-        localStorage.setItem(COSTS_KEY, JSON.stringify(this.lines))
-      } catch {
-        /* storage unavailable — session-only is acceptable */
+        const data = await api.get('/projects/' + projectId + '/costs')
+        this.lines = data.costs || []
+        this.loadedProjectId = projectId
+        return this.lines
+      } catch (err) {
+        this.error = err instanceof ApiError ? err.message : 'Could not load your cost data.'
+        throw err
+      } finally {
+        this.loading = false
       }
     },
+
+    /**
+     * Upload one CSV. The server parses it and reports every row it could not
+     * read, so nothing is silently dropped.
+     */
+    async importFile(file, projectId) {
+      const res = await api.upload('/projects/' + projectId + '/costs/import', file)
+      await this.fetchForProject(projectId, { force: true })
+      return res
+    },
+
+    async update(id, patch) {
+      const line = this.lines.find((l) => l.id === id)
+      const clean = { ...patch }
+      if (clean.rate != null) clean.rate = Math.max(0, Number(clean.rate) || 0)
+      if (clean.qty != null) clean.qty = Math.max(0, Number(clean.qty) || 0)
+      if (clean.unit != null) clean.unit = normalizeUnit(clean.unit)
+
+      // Applied locally first so the cell does not lag behind the keystroke.
+      if (line) Object.assign(line, clean)
+      if (clean.rate != null) clean.rate = Math.round(clean.rate)
+      const res = await api.patch('/costs/' + id, clean)
+      const i = this.lines.findIndex((l) => l.id === id)
+      if (i !== -1) this.lines[i] = res.cost
+      return res.cost
+    },
+
+    async remove(id) {
+      this.lines = this.lines.filter((l) => l.id !== id)
+      try {
+        await api.del('/costs/' + id)
+      } catch {
+        /* already gone server-side */
+      }
+    },
+
+    async removeSource(source, projectId = this.loadedProjectId) {
+      this.lines = this.lines.filter((l) => l.source !== source)
+      await api.del('/projects/' + projectId + '/costs?source=' + encodeURIComponent(source))
+    },
+
+    async clear(projectId = this.loadedProjectId) {
+      this.lines = []
+      await api.del('/projects/' + projectId + '/costs')
+    },
+
   },
 })

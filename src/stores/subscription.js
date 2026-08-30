@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { api } from '@/services/api'
 
 // ---------------------------------------------------------------------------
 // Trial and subscription state.
@@ -7,11 +8,10 @@ import { defineStore } from 'pinia'
 // is locked and only the billing screen remains reachable, so the user must
 // subscribe before doing any more work.
 //
-// This store decides what the UI shows. It is NOT a security boundary — a
-// determined user can edit localStorage. The real gate is that payments are
-// verified server-side (see api/paystack/verify.js), so an unpaid account can
-// never obtain a valid subscription record. Once a backend exists, this state
-// should be read from the server on login rather than from the browser.
+// This store is a MIRROR, not a source of truth. `hydrate()` copies the
+// server's answer in, and `hasAccess` returns exactly what the server said.
+// Editing localStorage restores nothing — the API returns 402 on every business
+// endpoint regardless of what the browser believes.
 // ---------------------------------------------------------------------------
 
 const SUB_KEY = 'buildq.subscription'
@@ -19,40 +19,46 @@ const SUB_KEY = 'buildq.subscription'
 export const TRIAL_DAYS = 14
 const DAY = 24 * 60 * 60 * 1000
 
-// Naira per month. Mirrors the public pricing page.
-export const PLANS = [
-  { name: 'Starter', price: 18000, blurb: 'Freelance surveyors', seats: 2, credits: 500, storage: 10 },
-  { name: 'Professional', price: 54000, blurb: 'Construction companies', seats: 10, credits: 2000, storage: 100 },
-  { name: 'Enterprise', price: null, blurb: 'Large firms & government', seats: 'Unlimited', credits: 'Unlimited', storage: 1000 },
-]
-
-function load() {
-  try {
-    const raw = localStorage.getItem(SUB_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
+// Only the marketing copy lives here. Every price, seat count and credit
+// allowance comes from GET /billing/plans — the server is what charges, so the
+// server is what quotes.
+export const PLAN_BLURBS = {
+  Starter: 'Freelance surveyors',
+  Professional: 'Construction companies',
+  Enterprise: 'Large firms & government',
 }
 
-const saved = load()
-
+// Nothing persisted is ever trusted: the app starts locked and waits for the
+// server, so a hand-edited storage entry grants nothing.
 export const useSubscriptionStore = defineStore('subscription', {
   state: () => ({
     // 'trialing' | 'active' | 'expired'
-    status: saved?.status || 'trialing',
-    plan: saved?.plan || null,
-    trialStartedAt: saved?.trialStartedAt || new Date().toISOString(),
+    status: 'trialing',
+    plan: null,
+    trialStartedAt: new Date().toISOString(),
     // Set when a verified payment comes back.
-    currentPeriodEnd: saved?.currentPeriodEnd || null,
-    payments: saved?.payments || [],
+    currentPeriodEnd: null,
+    payments: [],
+
+    // ─── Server-driven fields ───────────────────────────────────────────────
+    serverDriven: false,
+    serverHasAccess: false,
+    serverTrialEndsAt: null,
+    serverTrialDaysLeft: 0,
+    serverUrgency: 'calm',
+    // Until the server has answered, the app knows nothing.
+    hydrated: false,
   }),
 
   getters: {
-    trialEndsAt: (s) => new Date(new Date(s.trialStartedAt).getTime() + TRIAL_DAYS * DAY),
+    trialEndsAt: (s) =>
+      s.serverDriven && s.serverTrialEndsAt
+        ? new Date(s.serverTrialEndsAt)
+        : new Date(new Date(s.trialStartedAt).getTime() + TRIAL_DAYS * DAY),
 
     /** Whole days left in the trial; 0 once it has run out. */
-    trialDaysLeft() {
+    trialDaysLeft(s) {
+      if (s.serverDriven) return s.serverTrialDaysLeft
       const ms = this.trialEndsAt.getTime() - Date.now()
       return ms <= 0 ? 0 : Math.ceil(ms / DAY)
     },
@@ -66,8 +72,12 @@ export const useSubscriptionStore = defineStore('subscription', {
       return new Date(s.currentPeriodEnd).getTime() <= Date.now()
     },
 
-    /** The one question the rest of the app asks. */
-    hasAccess() {
+    /**
+     * The one question the rest of the app asks.
+     * Answered by the server; the local computation is only a mirror of it.
+     */
+    hasAccess(s) {
+      if (s.serverDriven) return s.serverHasAccess
       if (this.status === 'active') return !this.subscriptionExpired
       if (this.status === 'trialing') return this.trialDaysLeft > 0
       return false
@@ -78,7 +88,8 @@ export const useSubscriptionStore = defineStore('subscription', {
     },
 
     /** Nudge harder in the last stretch of the trial. */
-    trialUrgency() {
+    trialUrgency(s) {
+      if (s.serverDriven) return s.serverUrgency
       const d = this.trialDaysLeft
       if (d === 0) return 'over'
       if (d <= 3) return 'critical'
@@ -86,21 +97,49 @@ export const useSubscriptionStore = defineStore('subscription', {
       return 'calm'
     },
 
-    currentPlan: (s) => PLANS.find((p) => p.name === s.plan) || null,
+    currentPlan: (s) => s.plan,
 
     renewsOn: (s) => (s.currentPeriodEnd ? new Date(s.currentPeriodEnd) : null),
   },
 
   actions: {
+    /**
+     * Copies the server's subscription in. Called from the auth store on
+     * login, signup and every /auth/me. After this the server's answer is the
+     * only thing `hasAccess` consults.
+     */
+    hydrate(server) {
+      if (!server) return
+      this.serverDriven = true
+      this.hydrated = true
+
+      this.status = server.status
+      this.plan = server.plan
+      this.trialStartedAt = server.trialStartedAt || this.trialStartedAt
+      this.currentPeriodEnd = server.currentPeriodEnd
+
+      this.serverHasAccess = Boolean(server.hasAccess)
+      this.serverTrialEndsAt = server.trialEndsAt
+      this.serverTrialDaysLeft = server.trialDaysLeft ?? 0
+      this.serverUrgency = server.urgency || 'calm'
+
+      this._persist()
+    },
+
     /** Re-evaluate on load and on each navigation, so day 15 locks the app. */
     refresh() {
-      if (this.status === 'trialing' && this.trialDaysLeft === 0) {
-        this.status = 'expired'
-        this._persist()
-      }
-      if (this.status === 'active' && this.subscriptionExpired) {
-        this.status = 'expired'
-        this._persist()
+      // Always ask the server rather than recomputing from the browser.
+      return this.reload()
+    },
+
+    /** Pulls the current entitlement straight from the server. */
+    async reload() {
+      try {
+        const data = await api.get('/auth/me')
+        this.hydrate(data.subscription)
+        return data.subscription
+      } catch {
+        return null
       }
     },
 
@@ -124,9 +163,13 @@ export const useSubscriptionStore = defineStore('subscription', {
         periodEnd: end.toISOString(),
       })
       this._persist()
+
+      // The server has already recorded the payment, so take its version
+      // rather than trusting what we just computed locally.
+      this.reload()
     },
 
-    /** Used by the demo reset in billing, and by sign-out of a fresh account. */
+    /** Resets local state on sign-out; the server owns the real trial. */
     startTrial() {
       this.status = 'trialing'
       this.plan = null

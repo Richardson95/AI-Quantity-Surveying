@@ -1,183 +1,132 @@
 // ---------------------------------------------------------------------------
 // Drawing analysis — the single seam between the app and the analysis engine.
 // ---------------------------------------------------------------------------
-// Nothing else in the app talks to the analysis engine directly. Today there
-// is no engine, so these functions fall back to a local stand-in that derives
-// figures from the file's NAME and SIZE — it never reads the drawing. Every
-// result therefore reports where it came from, and the UI labels it honestly.
+// The engine lives inside the BuildQ backend, so this talks to the same
+// authenticated API as everything else (services/api.js). One backend, one base
+// URL, one session.
 //
-// When the backend exists, set VITE_ANALYSIS_API_URL and nothing else in the
-// app needs to change.
+// There is no longer a fallback. The old stand-in derived quantities from the
+// file's NAME and SIZE without ever reading it, which meant the same drawing
+// was worth ₦54.1M or ₦8.5M depending on what it was called. When the engine
+// cannot answer — no API key, no credits, nothing analysed yet, a format it
+// cannot read — that is reported as itself. An estimate is never dressed up as
+// a measurement.
 //
-// ---------------------------------------------------------------------------
-// CONTRACT THE BACKEND MUST IMPLEMENT
-// ---------------------------------------------------------------------------
-//
-// POST {VITE_ANALYSIS_API_URL}/analyze
-//   Request  (multipart/form-data)
-//     file      the drawing (PDF, DWG, DXF, RVT, IFC, PNG, JPG)
-//     projectId string
-//   Response 200 (application/json)
-//     {
-//       "documentId": "DOC-123",
-//       "scale": "1:100",                  // detected, or null
-//       "pages": 3,
-//       "elements": [                      // what was recognised on the drawing
-//         { "type": "wall",   "count": 24, "length": 148.2, "unit": "m"  },
-//         { "type": "slab",   "count": 2,  "area":   186.4, "unit": "m²" },
-//         { "type": "column", "count": 18 },
-//         { "type": "door",   "count": 9  },
-//         { "type": "window", "count": 14 }
-//       ],
-//       "measurements": [                  // ready for the takeoff screen
-//         { "name": "Ground floor slab", "type": "Area", "value": 186.4, "unit": "m²", "confidence": 0.94 }
-//       ],
-//       "warnings": ["Scale bar unreadable on sheet 2"]
-//     }
-//
-// POST {VITE_ANALYSIS_API_URL}/boq
-//   Request  (application/json)
-//     { "projectId": "PRJ-1042", "documentIds": ["DOC-123", "DOC-124"],
-//       "standard": "NIQS", "region": "Lagos" }
-//   Response 200 (application/json)
-//     {
-//       "items": [
-//         { "code": "B2.1",
-//           "desc": "Reinforced concrete (1:2:4) in suspended slab, 150mm thick",
-//           "section": "Superstructure",
-//           "unit": "m³",                  // canonical units — see utils/units.js
-//           "qty": 27.96,
-//           "rate": 80000,
-//           "confidence": 0.93,            // 0-1; omit if not measured
-//           "sources": ["Ground Floor Plan.pdf"] }
-//       ],
-//       "notes": [ { "type": "warning", "text": "No roofing drawing supplied" } ]
-//     }
-//
-// Measurement rules the engine must follow (see utils/units.js):
-//   in-situ concrete  m³      formwork      m²      reinforcement  tonne
-//   blockwork         m²      finishes      m²      earthworks     m³
-//   pipes and cables  m       fittings      no      site clearance m²
+// Confidence crosses the wire as 0–1 on the engine endpoints and 0–100 on the
+// app's own endpoints. Everything below normalises to 0–100, which is what the
+// tables render.
 // ---------------------------------------------------------------------------
 
-import { generateBoq, reviewBoq } from '@/utils/boqGenerator'
-import { detectMeasurements } from '@/utils/takeoff'
+import { api, ApiError } from '@/services/api'
 import { normalizeUnit } from '@/utils/units'
 
-export const ANALYSIS_API = import.meta.env.VITE_ANALYSIS_API_URL || ''
-
-/** True once a real analysis engine is configured. */
-export function hasAnalysisEngine() {
-  return Boolean(ANALYSIS_API)
-}
-
-/** Human-readable provenance, used for badges and disclaimers in the UI. */
+/** Provenance for the badge. Only the engine can produce a measured figure. */
 export const SOURCE_LABELS = {
   engine: { label: 'Analyzed', detail: 'Measured from your drawing by the analysis engine.' },
-  'stand-in': {
-    label: 'Template estimate',
-    detail:
-      'Figures come from a template matched to the file name — the drawing itself has not been read. Connect the analysis engine for measured quantities.',
+  none: {
+    label: 'Not analyzed',
+    detail: 'Nothing has been measured from this drawing yet.',
   },
 }
 
-async function postJson(path, body) {
-  const res = await fetch(`${ANALYSIS_API}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error(`Analysis engine returned ${res.status}`)
-  return res.json()
+// A percentage, whichever scale the server used. 0–1 becomes 0–100; a figure
+// already in percent is left alone; a missing one stays missing.
+function toPercent(c) {
+  if (c === null || c === undefined) return null
+  const n = Number(c)
+  if (!Number.isFinite(n)) return null
+  return n <= 1 ? Math.round(n * 100) : Math.round(n)
+}
+
+/** The message to show when a call could not produce measured quantities. */
+function reason(err) {
+  return err instanceof ApiError
+    ? err.message
+    : 'The analysis engine could not be reached. Nothing has been measured.'
 }
 
 /**
- * Build a Bill of Quantities from uploaded drawings.
- * Always resolves; falls back to the stand-in if the engine is unreachable.
+ * Build a Bill of Quantities from a project's drawings.
  *
- * @returns {{ source: 'engine'|'stand-in', items: Array, sources: string[],
- *             notes: Array, degraded?: string }}
+ * @returns {{ items: Array, sources: string[], notes: Array,
+ *             revision?: object, failed?: string }}
  */
 export async function buildBoq(docs = [], { projectId, standard = 'NIQS', region = 'Lagos' } = {}) {
   const drawings = docs.filter((d) => ['Drawing', 'CAD', 'BIM', 'Image'].includes(d.kind))
-  if (!drawings.length) return { source: 'stand-in', items: [], sources: [], notes: [] }
-
-  if (hasAnalysisEngine()) {
-    try {
-      const payload = await postJson('/boq', {
-        projectId,
-        documentIds: drawings.map((d) => d.id),
-        standard,
-        region,
-      })
-      const items = (payload.items || []).map((i, n) => ({
-        id: n + 1,
-        code: i.code,
-        desc: i.desc,
-        section: i.section,
-        unit: normalizeUnit(i.unit),
-        qty: Number(i.qty) || 0,
-        rate: Number(i.rate) || 0,
-        // Engine reports 0-1; the table shows whole percentages.
-        confidence: i.confidence != null ? Math.round(i.confidence * 100) : null,
-        sources: i.sources || [],
-      }))
-      return {
-        source: 'engine',
-        items,
-        sources: [...new Set(items.flatMap((i) => i.sources))],
-        notes: payload.notes || [],
-      }
-    } catch (err) {
-      // Never block the user on an engine outage — fall back and say so.
-      const local = generateBoq(drawings)
-      return {
-        source: 'stand-in',
-        items: local.items,
-        sources: local.sources,
-        notes: reviewBoq(local.items, drawings),
-        degraded: err.message,
-      }
+  if (!drawings.length) {
+    return {
+      items: [],
+      sources: [],
+      notes: [{ type: 'warning', text: 'No drawings to bill from — upload one first.' }],
     }
   }
 
-  const local = generateBoq(drawings)
-  return {
-    source: 'stand-in',
-    items: local.items,
-    sources: local.sources,
-    notes: reviewBoq(local.items, drawings),
+  try {
+    // Generating stores a new revision server-side, so the bill has a history
+    // and a variation can point at "Rev 2 → Rev 3" and mean something.
+    await api.post(`/projects/${projectId}/boq/generate`, {
+      documentIds: drawings.map((d) => d.id),
+      standard,
+      region,
+    })
+
+    // Read the stored revision back, so what the screen shows is what the
+    // server holds — not a separate copy that can drift from it.
+    const boq = await api.get(`/projects/${projectId}/boq`)
+    const items = (boq.items || []).map((i) => ({
+      id: i.id,
+      code: i.code,
+      desc: i.desc,
+      section: i.section,
+      unit: normalizeUnit(i.unit),
+      qty: Number(i.qty) || 0,
+      rate: Number(i.rate) || 0,
+      confidence: toPercent(i.confidence),
+      sources: i.sources || [],
+    }))
+
+    return {
+      items,
+      sources: [...new Set(items.flatMap((i) => i.sources))],
+      notes: boq.notes || [],
+      revision: boq.revision || null,
+    }
+  } catch (err) {
+    const text = reason(err)
+    return { items: [], sources: [], notes: [{ type: 'warning', text }], failed: text }
   }
 }
 
 /**
  * Detect measurements from a single plan for the takeoff screen.
- * @returns {{ source: 'engine'|'stand-in', measurements: Array, warnings: string[] }}
+ *
+ * @returns {{ measurements: Array, warnings: string[], scale: string|null,
+ *             failed?: string }}
  */
 export async function detectFrom(doc) {
-  if (!doc) return { source: 'stand-in', measurements: [], warnings: [] }
+  if (!doc) return { measurements: [], warnings: [] }
 
-  if (hasAnalysisEngine()) {
-    try {
-      const payload = await postJson('/analyze', { documentId: doc.id })
-      const measurements = (payload.measurements || []).map((m) => ({
-        name: m.name,
-        type: m.type,
-        value: `${m.value} ${normalizeUnit(m.unit)}`,
-        numeric: Number(m.value) || 0,
-        auto: true,
-        source: doc.name,
-      }))
-      return { source: 'engine', measurements, warnings: payload.warnings || [] }
-    } catch (err) {
-      return {
-        source: 'stand-in',
-        measurements: detectMeasurements(doc),
-        warnings: [],
-        degraded: err.message,
-      }
+  try {
+    const payload = await api.post(`/documents/${doc.id}/detect`, {})
+    const measurements = (payload.measurements || []).map((m) => ({
+      id: m.id,
+      name: m.name,
+      type: m.type,
+      value: m.value,
+      numeric: Number(m.numeric ?? 0) || 0,
+      unit: m.unit,
+      color: m.color,
+      auto: Boolean(m.auto),
+      confidence: toPercent(m.confidence),
+      source: m.source || doc.name,
+    }))
+    return {
+      measurements,
+      warnings: payload.warnings || [],
+      scale: payload.scale ?? null,
     }
+  } catch (err) {
+    const text = reason(err)
+    return { measurements: [], warnings: [text], scale: null, failed: text }
   }
-
-  return { source: 'stand-in', measurements: detectMeasurements(doc), warnings: [] }
 }

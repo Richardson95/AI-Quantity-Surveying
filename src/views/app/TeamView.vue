@@ -1,37 +1,41 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { UserPlus, Mail, Shield, Crown, X, Trash2, RefreshCw } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
+import { useTeamStore } from '@/stores/team'
 
 const { toast } = useToast()
+const auth = useAuthStore()
+const store = useTeamStore()
 
-const members = ref([
-  { name: 'Dammie Adetunji', email: 'adetunjidammie2@gmail.com', role: 'Company Admin', avatar: 'DA', status: 'Active', online: true },
-  { name: 'Kemi Olu', email: 'kemi@adetunji.co', role: 'Quantity Surveyor', avatar: 'KO', status: 'Active', online: true },
-  { name: 'Tunde James', email: 'tunde@adetunji.co', role: 'Project Manager', avatar: 'TJ', status: 'Active', online: false },
-  { name: 'Maryam Nuhu', email: 'maryam@adetunji.co', role: 'Quantity Surveyor', avatar: 'MN', status: 'Active', online: false },
-  { name: 'Client — Oceanview', email: 'pm@oceanview.com', role: 'Client Viewer', avatar: 'OV', status: 'Invited', online: false },
-])
+// Active members and pending invitations, as the screen renders them.
+const members = computed(() => store.team)
 
-// Inviting used to fabricate a placeholder teammate. Now it asks who you mean.
+onMounted(() => {
+  store.fetch().catch((e) => toast(e.message, 'warning'))
+})
+
+// Inviting used to fabricate a placeholder teammate. Now it asks who you mean,
+// and the server sends a real email with a single-use token.
 const inviteOpen = ref(false)
+const sending = ref(false)
 const invite = ref({ name: '', email: '', role: 'Quantity Surveyor' })
 const inviteError = ref('')
 
 function openInvite() {
+  // Seats are a real limit — say so before collecting details that get refused.
+  if (store.seatsFull) {
+    toast(`Your plan includes ${store.seats.limit} seats and they are all taken. Upgrade to invite more people.`, 'warning')
+    return
+  }
   invite.value = { name: '', email: '', role: 'Quantity Surveyor' }
   inviteError.value = ''
   inviteOpen.value = true
 }
 
-function initials(name) {
-  const parts = String(name).trim().split(/\s+/).filter(Boolean)
-  if (!parts.length) return '??'
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
-}
-
-function sendInvite() {
+async function sendInvite() {
+  if (sending.value) return
   const { name, email, role } = invite.value
   if (!name.trim() || !email.trim()) {
     inviteError.value = 'Name and email are both required.'
@@ -45,29 +49,55 @@ function sendInvite() {
     inviteError.value = 'That person is already on the team.'
     return
   }
-  members.value.push({
-    name: name.trim(),
-    email: email.trim(),
-    role,
-    avatar: initials(name),
-    status: 'Invited',
-    online: false,
-  })
-  inviteOpen.value = false
-  toast(`Invitation sent to ${email.trim()}`)
+
+  sending.value = true
+  try {
+    await store.invite({ name, email, role })
+    inviteOpen.value = false
+    toast(`Invitation sent to ${email.trim()}`)
+  } catch (err) {
+    inviteError.value = err.message || 'That invitation could not be sent.'
+  } finally {
+    sending.value = false
+  }
 }
 
-function resendInvite(m) {
-  toast(`Invitation resent to ${m.email}`, 'info')
+async function resendInvite(m) {
+  try {
+    await store.resendInvite(m.id)
+    toast(`Invitation resent to ${m.email}`, 'info')
+  } catch (err) {
+    toast(err.message || `Could not resend to ${m.email}`, 'warning')
+  }
 }
 
-function removeMember(m) {
-  if (m.role === 'Company Admin') {
-    toast('The company admin cannot be removed', 'warning')
+async function removeMember(m) {
+  if (m.email && m.email.toLowerCase() === auth.user.email?.toLowerCase()) {
+    toast('You cannot remove yourself from the team', 'warning')
     return
   }
-  members.value = members.value.filter((x) => x.email !== m.email)
-  toast(`${m.name} removed from the team`, 'info')
+  try {
+    if (m.status === 'Invited') {
+      await store.revokeInvite(m.id)
+      toast(`Invitation to ${m.email} revoked`, 'info')
+      return
+    }
+    await store.removeMember(m.id)
+    toast(`${m.name} removed from the team`, 'info')
+  } catch (err) {
+    // The server refuses to leave an organization with no admin.
+    toast(err.message || `${m.name} could not be removed`, 'warning')
+  }
+}
+
+async function changeRole(m, role) {
+  try {
+    await store.updateMemberRole(m.id, role)
+    toast(`${m.name} is now a ${role.toLowerCase()}`)
+  } catch (err) {
+    toast(err.message || 'That role could not be changed', 'warning')
+    await store.fetch({ force: true }).catch(() => {})
+  }
 }
 
 const roleColor = {
@@ -97,7 +127,11 @@ const assignableRoles = roleDefs.map((r) => r.name)
       <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 class="font-display text-2xl font-bold text-secondary">Team</h2>
-          <p class="mt-1 text-brand-muted">{{ members.length }} members · Adetunji & Associates</p>
+          <p class="mt-1 text-brand-muted">
+            {{ store.members.length }} member{{ store.members.length === 1 ? '' : 's' }}<template v-if="store.invitations.length">, {{ store.invitations.length }} invited</template>
+            <template v-if="auth.organization"> · {{ auth.organization.name }}</template>
+            <template v-if="store.seats.limit"> · {{ store.seats.used }} of {{ store.seats.limit }} seats used</template>
+          </p>
         </div>
         <button class="btn-primary btn-md self-start" @click="openInvite"><UserPlus class="h-4 w-4" /> Invite member</button>
       </div>
@@ -119,8 +153,9 @@ const assignableRoles = roleDefs.map((r) => r.name)
         <div class="border-b border-brand-border-light p-5">
           <h3 class="font-display font-bold text-secondary">Members</h3>
         </div>
-        <div class="divide-y divide-brand-border-light">
-          <div v-for="m in members" :key="m.email" class="flex flex-col gap-3 px-5 py-4 transition-colors hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
+        <p v-if="store.loading && !members.length" class="px-5 py-14 text-center text-sm text-brand-muted">Loading the team…</p>
+        <div v-else class="divide-y divide-brand-border-light">
+          <div v-for="m in members" :key="m.id || m.email" class="flex flex-col gap-3 px-5 py-4 transition-colors hover:bg-brand-bg sm:flex-row sm:items-center sm:gap-4">
             <div class="flex min-w-0 flex-1 items-center gap-4">
               <div class="relative shrink-0">
                 <div class="grid h-11 w-11 place-items-center rounded-full bg-brand-gradient text-sm font-bold text-white">{{ m.avatar }}</div>
@@ -132,7 +167,10 @@ const assignableRoles = roleDefs.map((r) => r.name)
               </div>
             </div>
             <div class="flex flex-wrap items-center gap-2 pl-[60px] sm:pl-0">
-              <select v-model="m.role" class="rounded-full border-0 px-2.5 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-primary/30" :class="roleColor[m.role]">
+              <!-- Changing a role is an admin capability; the server refuses
+                   anyone else, so a failure here is the real answer. -->
+              <select :value="m.role" class="rounded-full border-0 px-2.5 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-primary/30" :class="roleColor[m.role]"
+                @change="changeRole(m, $event.target.value)">
                 <option v-for="r in assignableRoles" :key="r" :value="r">{{ r }}</option>
               </select>
               <span class="badge whitespace-nowrap" :class="m.status === 'Active' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'">{{ m.status }}</span>
@@ -170,7 +208,9 @@ const assignableRoles = roleDefs.map((r) => r.name)
             <p v-if="inviteError" class="text-sm font-medium text-danger">{{ inviteError }}</p>
             <div class="flex gap-2 pt-2">
               <button type="button" class="btn-outline btn-md flex-1" @click="inviteOpen = false">Cancel</button>
-              <button type="submit" class="btn-primary btn-md flex-1"><UserPlus class="h-4 w-4" /> Send invite</button>
+              <button type="submit" class="btn-primary btn-md flex-1" :disabled="sending">
+                <UserPlus class="h-4 w-4" /> {{ sending ? 'Sending…' : 'Send invite' }}
+              </button>
             </div>
           </form>
         </div>
