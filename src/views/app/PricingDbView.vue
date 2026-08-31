@@ -1,9 +1,10 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { Database, Search, Plus, TrendingUp, TrendingDown, Package, HardHat, Wrench, Upload, Globe, Trash2, X } from 'lucide-vue-next'
+import { Database, Search, Plus, TrendingUp, TrendingDown, Package, HardHat, Wrench, Upload, Globe, Trash2, X, History } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useRatesStore } from '@/stores/rates'
 import { normalizeUnit, COMMON_UNITS } from '@/utils/units'
+import { formatFull, timeAgo } from '@/utils/format'
 
 const { toast } = useToast()
 const store = useRatesStore()
@@ -149,6 +150,25 @@ async function onLibraryPicked(e) {
   }
 }
 
+// --- Price history -----------------------------------------------------------
+// The table shows a movement percentage; the readings behind it had no UI.
+const historyOpen = ref(false)
+const historyFor = ref(null)
+const historyRows = ref([])
+const loadingHistory = ref(false)
+
+async function openHistory(item) {
+  historyFor.value = item
+  historyOpen.value = true
+  loadingHistory.value = true
+  try {
+    const res = await store.history(item.id)
+    historyRows.value = res.history || []
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
 const filtered = computed(() => items.value.filter((i) => {
   const c = category.value === 'All' || i.cat === category.value
   const q = i.name.toLowerCase().includes(query.value.toLowerCase())
@@ -251,10 +271,14 @@ const filtered = computed(() => items.value.filter((i) => {
                   {{ Math.abs(i.change) }}%
                 </span>
               </td>
-              <td class="px-5 py-3 text-right">
-                <button v-if="store.editable(i)" class="grid h-8 w-8 place-items-center rounded-lg text-brand-light opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
-                  title="Delete rate" @click="removeRate(i)"><Trash2 class="h-4 w-4" /></button>
-                <span v-else class="text-[11px] text-brand-light" title="Curated market rate — shared by every account">Global</span>
+              <td class="px-5 py-3">
+                <div class="flex items-center justify-end gap-1">
+                  <button class="grid h-8 w-8 place-items-center rounded-lg text-brand-light opacity-0 transition-opacity hover:bg-brand-border-light hover:text-primary group-hover:opacity-100"
+                    title="Price history" @click="openHistory(i)"><History class="h-4 w-4" /></button>
+                  <button v-if="store.editable(i)" class="grid h-8 w-8 place-items-center rounded-lg text-brand-light opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
+                    title="Delete rate" @click="removeRate(i)"><Trash2 class="h-4 w-4" /></button>
+                  <span v-else class="text-[11px] text-brand-light" title="Curated market rate — shared by every account">Global</span>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -312,5 +336,38 @@ const filtered = computed(() => items.value.filter((i) => {
         </div>
       </div>
     </transition>
+
+    <!-- Price history -->
+    <transition name="page">
+      <div v-if="historyOpen" class="fixed inset-0 z-[60] flex items-center justify-center bg-secondary/50 p-4 backdrop-blur-sm" @click.self="historyOpen = false">
+        <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-card-hover">
+          <div class="flex items-start justify-between border-b border-brand-border-light px-6 py-4">
+            <div class="min-w-0">
+              <h3 class="truncate font-display text-lg font-bold text-secondary">{{ historyFor?.name }}</h3>
+              <p class="text-xs text-brand-light">
+                Now {{ formatFull(historyFor?.rate || 0) }} per {{ historyFor?.unit }}
+                <template v-if="historyFor?.hasHistory">
+                  · {{ historyFor.change > 0 ? '+' : '' }}{{ historyFor.change }}% since {{ timeAgo(historyFor.changeSince) }}
+                </template>
+              </p>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click="historyOpen = false"><X class="h-5 w-5" /></button>
+          </div>
+          <div class="max-h-80 overflow-y-auto p-4">
+            <p v-if="loadingHistory" class="py-8 text-center text-sm text-brand-muted">Loading…</p>
+            <p v-else-if="!historyRows.length" class="rounded-xl border border-dashed border-brand-border-light px-4 py-8 text-center text-sm text-brand-muted">
+              No earlier price recorded. A reading is kept each time this rate changes.
+            </p>
+            <div v-else class="space-y-2">
+              <div v-for="(h, n) in historyRows" :key="n" class="flex items-center justify-between rounded-xl border border-brand-border-light px-3 py-2 text-sm">
+                <span class="text-brand-muted">{{ timeAgo(h.recordedAt) }}</span>
+                <span class="font-semibold text-secondary">{{ formatFull(h.rate) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
   </div>
 </template>

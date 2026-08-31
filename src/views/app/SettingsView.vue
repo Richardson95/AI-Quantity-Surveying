@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { User, Lock, Building2, Camera, Check } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
@@ -15,38 +15,31 @@ const tabs = [
   { id: 'security', name: 'Security', icon: Lock },
 ]
 
-const PREFS_KEY = 'buildq.settings'
-
-function loadPrefs() {
-  try {
-    const raw = localStorage.getItem(PREFS_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
-const defaults = {
-  industry: 'Construction & QS',
-  country: 'Nigeria',
-  currency: '₦ Naira (NGN)',
-}
-
-const stored = loadPrefs()
-
+// Industry, country and currency belong to the ORGANIZATION and are columns on
+// it. They used to be written to localStorage, which meant every teammate saw a
+// different answer and the columns never left their defaults.
 function blankForm() {
+  const org = auth.organization || {}
   return {
     name: auth.user.name,
     email: auth.user.email,
     role: auth.user.role,
     company: auth.user.company,
     phone: auth.user.phone,
-    ...defaults,
-    ...(stored || {}),
+    industry: org.industry || 'Construction',
+    country: org.country || 'Nigeria',
+    currency: org.currency || 'NGN',
   }
 }
 
 const form = ref(blankForm())
+
+// The session arrives from the router guard, which may resolve after setup.
+watch(() => auth.organization, () => { form.value = blankForm() })
+
+// Only an admin may change the company-wide fields; the server refuses anyone
+// else, so the inputs are disabled rather than failing on save.
+const isAdmin = computed(() => auth.user.role === 'Company Admin')
 
 const passwords = ref({ current: '', next: '', confirm: '' })
 const errors = ref('')
@@ -99,19 +92,20 @@ async function save() {
         name: form.value.name.trim(),
         email: form.value.email.trim(),
         role: form.value.role,
-        company: form.value.company,
         phone: form.value.phone,
+        // Company-wide fields go only when this user may set them.
+        ...(isAdmin.value
+          ? {
+              company: form.value.company,
+              industry: form.value.industry.trim(),
+              country: form.value.country,
+              currency: form.value.currency,
+            }
+          : {}),
       })
     } catch (err) {
       errors.value = err.message || 'Those details could not be saved.'
       return
-    }
-
-    const { name, email, role, company, phone, ...prefs } = form.value
-    try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
-    } catch {
-      /* storage unavailable — keep in-memory only */
     }
 
     saved.value = true
@@ -198,14 +192,17 @@ async function onPhotoPicked(e) {
         <!-- Company -->
         <div v-else-if="tab === 'company'" class="space-y-6">
           <h3 class="font-display text-lg font-bold text-secondary">Company</h3>
+          <p v-if="!isAdmin" class="rounded-xl border border-brand-border-light bg-brand-bg px-4 py-3 text-sm text-brand-muted">
+            These settings apply to the whole workspace, so only a company admin can change them.
+          </p>
           <div class="grid gap-5 sm:grid-cols-2">
-            <div><label class="label">Company name</label><input v-model="form.company" class="input" /></div>
-            <div><label class="label">Industry</label><input v-model="form.industry" class="input" /></div>
+            <div><label class="label">Company name</label><input v-model="form.company" class="input" :disabled="!isAdmin" /></div>
+            <div><label class="label">Industry</label><input v-model="form.industry" class="input" :disabled="!isAdmin" /></div>
             <div><label class="label">Country</label>
-              <select v-model="form.country" class="input"><option>Nigeria</option><option>Ghana</option><option>Kenya</option><option>South Africa</option></select>
+              <select v-model="form.country" class="input" :disabled="!isAdmin"><option>Nigeria</option><option>Ghana</option><option>Kenya</option><option>South Africa</option></select>
             </div>
             <div><label class="label">Default currency</label>
-              <select v-model="form.currency" class="input"><option>₦ Naira (NGN)</option><option>$ Dollar (USD)</option><option>£ Pound (GBP)</option></select>
+              <select v-model="form.currency" class="input" :disabled="!isAdmin"><option>NGN</option><option>USD</option><option>GBP</option></select>
             </div>
           </div>
         </div>

@@ -5,7 +5,23 @@ import { Mail, Phone, MapPin, Send, Check } from 'lucide-vue-next'
 const sent = ref(false)
 const form = ref({ name: '', email: '', company: '', message: '' })
 
+// There is no contact endpoint, so this opens the visitor's mail client with
+// the message already written rather than pretending to have sent it. It used
+// to flip a flag and say "we'll get back to you", which was untrue.
+const CONTACT_EMAIL = 'hello@brgprime.com'
+
 function submit() {
+  const subject = `BuildQ enquiry from ${form.value.name || 'a visitor'}`
+  const body = [
+    `Name: ${form.value.name}`,
+    `Email: ${form.value.email}`,
+    form.value.company ? `Company: ${form.value.company}` : '',
+    '',
+    form.value.message,
+  ].filter(Boolean).join('\n')
+
+  window.location.href =
+    `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
   sent.value = true
 }
 </script>
@@ -44,8 +60,12 @@ function submit() {
           <div class="grid h-16 w-16 place-items-center rounded-full bg-success/10 text-success">
             <Check class="h-8 w-8" />
           </div>
-          <h3 class="mt-5 font-display text-xl font-bold text-secondary">Message sent!</h3>
-          <p class="mt-2 text-sm text-brand-muted">Thanks for reaching out. We'll get back to you within one business day.</p>
+          <h3 class="mt-5 font-display text-xl font-bold text-secondary">Your email is ready to send</h3>
+          <p class="mt-2 max-w-sm text-sm text-brand-muted">
+            We've opened your mail app with the message filled in — send it and we'll reply within one business day.
+            If nothing opened, write to
+            <a :href="`mailto:${CONTACT_EMAIL}`" class="font-semibold text-primary hover:underline">{{ CONTACT_EMAIL }}</a>.
+          </p>
         </div>
 
         <form v-else class="space-y-5" @submit.prevent="submit">

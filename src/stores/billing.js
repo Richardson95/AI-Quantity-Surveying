@@ -98,24 +98,6 @@ export const useBillingStore = defineStore('billing', {
       }
     },
 
-    /**
-     * Confirm a payment the user has come back from. Idempotent: calling it
-     * twice reports the same outcome without granting anything again.
-     */
-    async confirm(plan, reference) {
-      this.working = true
-      try {
-        const res = await api.post('/billing/subscribe', { plan, reference })
-        // The paywall reads the subscription, so refresh it from the same answer.
-        useSubscriptionStore().hydrate(res.subscription)
-        await this.fetchInvoices()
-        await this.fetchUsage()
-        return res
-      } finally {
-        this.working = false
-      }
-    },
-
     /** Verifies any reference — used when returning from the Paystack redirect. */
     async verifyPayment(reference) {
       const res = await api.post('/payments/verify', { reference })

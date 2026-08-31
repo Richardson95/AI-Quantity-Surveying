@@ -5,6 +5,7 @@ import { useToast } from '@/composables/useToast'
 import { useProjectsStore } from '@/stores/projects'
 import { useVariationsStore } from '@/stores/variations'
 import { formatFull, timeAgo } from '@/utils/format'
+import ProjectSwitcher from '@/components/ProjectSwitcher.vue'
 
 const { toast } = useToast()
 const projects = useProjectsStore()
@@ -138,6 +139,7 @@ const netImpact = computed(() => store.approvedTotal)
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">Variations</h2>
         <p class="mt-1 text-brand-muted">Change orders &amp; cost impact<template v-if="projects.current"> · {{ projects.current.name }}</template></p>
+        <ProjectSwitcher class="mt-3" />
       </div>
       <button class="btn-primary btn-md self-start" @click="openCreate"><Plus class="h-4 w-4" /> New Variation</button>
     </div>

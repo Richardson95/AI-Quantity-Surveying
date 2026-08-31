@@ -1,21 +1,24 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch , onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { Ruler, Square, Box, Hash, MousePointer2, ZoomIn, ZoomOut, Layers, Sparkles, Plus, Trash2, Upload, X } from 'lucide-vue-next'
+import { Ruler, Square, Box, Hash, MousePointer2, ZoomIn, ZoomOut, Layers, Sparkles, Plus, Trash2, Upload, X, AlertTriangle, FileQuestion } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useDocumentsStore } from '@/stores/documents'
 import { useProjectsStore } from '@/stores/projects'
 import { useTakeoffStore } from '@/stores/takeoff'
+import { useBillingStore } from '@/stores/billing'
 import { numericValue } from '@/utils/takeoff'
 import { SOURCE_LABELS } from '@/services/analysis'
 import FileDropzone from '@/components/FileDropzone.vue'
 import DocumentList from '@/components/DocumentList.vue'
+import ProjectSwitcher from '@/components/ProjectSwitcher.vue'
 
 const router = useRouter()
 const { toast } = useToast()
 const documents = useDocumentsStore()
 const projects = useProjectsStore()
 const takeoff = useTakeoffStore()
+const billing = useBillingStore()
 
 // Takeoff measures the same project's drawings the BOQ workspace uses.
 const projectId = computed(() => projects.currentProjectId)
@@ -33,14 +36,50 @@ async function loadProject(id) {
 
 onMounted(async () => {
   await projects.ensureProject()
-  await loadProject(projectId.value)
+  await Promise.all([loadProject(projectId.value), billing.fetchUsage()])
 })
+
+// Auto-detect reads the sheet through the model; that costs a credit.
+const outOfCredits = computed(() => billing.creditsExhausted)
+const creditsLeft = computed(() => billing.creditsLeft)
 watch(projectId, (id) => loadProject(id))
 
 const plans = computed(() => documents.drawingsFor(projectId.value))
 const activePlan = computed(
   () => plans.value.find((d) => d.id === selectedDocId.value) || plans.value[0] || null
 )
+
+// The viewer used to draw an invented floor plan — a blue rectangle labelled
+// "186.4 m²", a green "Wet area" box and four red dots — over a grid, and the
+// real drawing never appeared because `dataUrl` only ever existed on the demo
+// fixtures. It now asks the server for a short-lived signed preview of the
+// selected file and shows that, or says plainly why it cannot.
+const planPreview = ref({ url: null, notice: '', loading: false })
+
+async function loadPreview(doc) {
+  if (!doc) {
+    planPreview.value = { url: null, notice: '', loading: false }
+    return
+  }
+  planPreview.value = { url: null, notice: '', loading: true }
+  const res = await documents.previewUrl(doc)
+  // A slower request for a drawing the user has since switched away from must
+  // not paint over the current one.
+  if (activePlan.value?.id !== doc.id) return
+  planPreview.value = {
+    url: res.url || null,
+    notice: res.url ? '' : res.notice || 'No preview is available for this file.',
+    loading: false,
+  }
+}
+
+watch(activePlan, (doc) => { loadPreview(doc) }, { immediate: true })
+
+/** Images render inline; PDFs need a frame; CAD and BIM have no renderer. */
+const previewKind = computed(() => {
+  if (!planPreview.value.url) return 'none'
+  return activePlan.value?.kind === 'Image' ? 'image' : 'frame'
+})
 
 const zoom = ref(100)
 const activeTool = ref('area')
@@ -93,6 +132,10 @@ const detectProvenance = computed(() => SOURCE_LABELS[detectSource.value])
 // by hand, so a re-run never discards the user's own work.
 async function autoDetect() {
   if (takeoff.detecting) return
+  if (outOfCredits.value) {
+    toast("Your plan's AI credits are used up for this period — upgrade to keep reading drawings", 'warning')
+    return
+  }
   if (!activePlan.value) {
     toast('Upload a plan first — measurements are detected from it', 'warning')
     plansOpen.value = true
@@ -105,6 +148,7 @@ async function autoDetect() {
 
   toast(`Reading ${activePlan.value.name}…`, 'info')
   const result = await takeoff.detect(activePlan.value, projectId.value)
+  billing.fetchUsage()
   if (!result) return
 
   ;(result.warnings || []).forEach((w) => toast(w, 'warning'))
@@ -250,6 +294,10 @@ async function syncToBoq() {
     syncing.value = false
   }
 }
+
+// Analysis polling runs on a timer in the documents store; stop it when the
+// screen goes away, or navigating between projects leaves pollers behind.
+onBeforeUnmount(() => documents.stopWatching())
 </script>
 
 <template>
@@ -258,19 +306,23 @@ async function syncToBoq() {
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">Quantity Takeoff</h2>
         <p class="mt-1 text-brand-muted">
-          Digital measurement from
-          <span class="font-medium text-secondary">{{ activePlan ? activePlan.name : 'Ground Floor Plan.pdf' }}</span>
+          <template v-if="activePlan">
+            Digital measurement from
+            <span class="font-medium text-secondary">{{ activePlan.name }}</span>
+          </template>
+          <template v-else>Select an uploaded drawing to measure from.</template>
         </p>
         <p v-if="detectSource !== 'engine'" class="mt-1 max-w-xl text-xs text-warning">
           {{ detectProvenance.detail }}
         </p>
+        <ProjectSwitcher class="mt-3" />
       </div>
       <div class="flex flex-wrap gap-2 self-start">
         <button class="btn-outline btn-md" @click="plansOpen = !plansOpen">
           <Upload class="h-4 w-4" /> Plans
           <span v-if="plans.length" class="badge bg-primary/10 text-primary-dark">{{ plans.length }}</span>
         </button>
-        <button class="btn-primary btn-md" :disabled="detecting" @click="autoDetect">
+        <button class="btn-primary btn-md" :disabled="detecting || outOfCredits" :title="outOfCredits ? 'No AI credits left this period' : 'Read this plan and record what it measures'" @click="autoDetect">
           <Sparkles class="h-4 w-4" /> {{ detecting ? 'Detecting…' : 'Auto-detect all' }}
         </button>
       </div>
@@ -297,6 +349,14 @@ async function syncToBoq() {
       />
     </div>
 
+    <p v-if="outOfCredits" class="flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-brand-muted">
+      <AlertTriangle class="h-4 w-4 shrink-0 text-warning" />
+      Your plan's AI credits are used up for this period, so drawings cannot be read. Measurements can still be added by hand.
+    </p>
+    <p v-else-if="creditsLeft !== null && creditsLeft <= 10" class="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-brand-muted">
+      {{ creditsLeft }} AI credit{{ creditsLeft === 1 ? '' : 's' }} left this period.
+    </p>
+
     <div class="grid gap-6 lg:grid-cols-3">
       <!-- Canvas -->
       <div class="card overflow-hidden lg:col-span-2">
@@ -317,34 +377,39 @@ async function syncToBoq() {
         <div class="relative aspect-[4/3] overflow-hidden bg-secondary"
           :class="activeMeta ? 'cursor-crosshair' : 'cursor-default'"
           @click="onCanvasClick">
+          <!-- The drawing itself, from a signed URL the server issues per view. -->
           <img
-            v-if="activePlan && activePlan.kind === 'Image' && activePlan.dataUrl"
-            :src="activePlan.dataUrl"
+            v-if="previewKind === 'image'"
+            :src="planPreview.url"
             :alt="activePlan.name"
-            class="absolute inset-0 h-full w-full object-contain opacity-70 transition-transform duration-200"
+            class="absolute inset-0 h-full w-full object-contain transition-transform duration-200"
             :style="{ transform: 'scale(' + zoom / 100 + ')' }"
           />
-          <svg viewBox="0 0 400 300" class="relative h-full w-full origin-center transition-transform duration-200"
-            :style="{ transform: 'scale(' + zoom / 100 + ')' }">
-            <defs>
-              <pattern id="grid2" width="20" height="20" patternUnits="userSpaceOnUse">
-                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#2D3D63" stroke-width="0.5" />
-              </pattern>
-            </defs>
-            <rect width="400" height="300" fill="#1B2540" />
-            <rect width="400" height="300" fill="url(#grid2)" />
-            <!-- measured area -->
-            <rect x="60" y="50" width="280" height="200" fill="#1CA5F6" fill-opacity="0.12" stroke="#1CA5F6" stroke-width="1.5" />
-            <rect x="80" y="70" width="100" height="60" fill="#2DC875" fill-opacity="0.12" stroke="#2DC875" stroke-width="1.5" stroke-dasharray="4 2" />
-            <circle v-for="(p, i) in [[230,80],[290,80],[230,160],[290,160]]" :key="i" :cx="p[0]" :cy="p[1]" r="4" fill="#E63946" />
-            <text x="180" y="155" fill="#6DCBFB" font-size="9" text-anchor="middle">186.4 m²</text>
-            <text x="100" y="105" fill="#2DC875" font-size="8">Wet area</text>
-          </svg>
-          <div class="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg bg-white/10 px-2.5 py-1.5 text-xs text-white backdrop-blur">
+          <iframe
+            v-else-if="previewKind === 'frame'"
+            :src="planPreview.url"
+            :title="activePlan.name"
+            class="absolute inset-0 h-full w-full border-0 bg-white transition-transform duration-200"
+            :style="{ transform: 'scale(' + zoom / 100 + ')' }"
+          ></iframe>
+
+          <!-- Nothing to show: say which of the three reasons applies. -->
+          <div v-else class="absolute inset-0 grid place-items-center px-6 text-center">
+            <div>
+              <FileQuestion class="mx-auto h-10 w-10 text-white/30" />
+              <p class="mt-3 text-sm font-medium text-white/70">
+                <template v-if="planPreview.loading">Opening the drawing…</template>
+                <template v-else-if="!activePlan">Upload a drawing, then select it to measure from.</template>
+                <template v-else>{{ planPreview.notice }}</template>
+              </p>
+            </div>
+          </div>
+
+          <div class="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg bg-black/40 px-2.5 py-1.5 text-xs text-white backdrop-blur">
             <Ruler class="h-3.5 w-3.5 text-primary-light" />
-            <span v-if="activeMeta">{{ activeMeta.type }} tool — click the drawing to measure</span>
-            <span v-else-if="detectSource === 'engine'">Scale 1:100 · auto-detected</span>
-            <span v-else>Illustrative view — drawing not read</span>
+            <span v-if="activeMeta && activePlan">{{ activeMeta.type }} tool — click to add a {{ activeMeta.type }} entry, then type its value</span>
+            <span v-else-if="measurements.length">{{ measurements.length }} measurement{{ measurements.length === 1 ? '' : 's' }} on this project</span>
+            <span v-else>No quantities measured yet</span>
           </div>
         </div>
       </div>

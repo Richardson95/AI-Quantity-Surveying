@@ -1,20 +1,23 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch , onBeforeUnmount } from 'vue'
 import {
   Upload, Sparkles, Download, Search, Plus, FileSpreadsheet, Check,
-  Pencil, Trash2, Cpu, Layers, X,
+  Pencil, Trash2, Cpu, Layers, X, History, AlertTriangle,
 } from 'lucide-vue-next'
 import { useProjectsStore } from '@/stores/projects'
 import { useDocumentsStore } from '@/stores/documents'
+import { useBillingStore } from '@/stores/billing'
 import { buildBoq, SOURCE_LABELS } from '@/services/analysis'
 import { useToast } from '@/composables/useToast'
 import { normalizeUnit, COMMON_UNITS, unitsCompatible, dimensionOf } from '@/utils/units'
-import { formatFull } from '@/utils/format'
+import { formatFull, timeAgo } from '@/utils/format'
 import FileDropzone from '@/components/FileDropzone.vue'
 import DocumentList from '@/components/DocumentList.vue'
+import ProjectSwitcher from '@/components/ProjectSwitcher.vue'
 
 const store = useProjectsStore()
 const documents = useDocumentsStore()
+const billing = useBillingStore()
 const { toast } = useToast()
 const query = ref('')
 const generating = ref(false)
@@ -37,8 +40,29 @@ async function loadProject(id) {
 
 onMounted(async () => {
   await store.ensureProject()
-  await loadProject(projectId.value)
+  await Promise.all([loadProject(projectId.value), billing.fetchUsage()])
 })
+
+// Generating a bill is a paid model call. Say so before the button refuses.
+const outOfCredits = computed(() => billing.creditsExhausted)
+const creditsLeft = computed(() => billing.creditsLeft)
+
+// --- Revision history --------------------------------------------------------
+// The server versions every bill, so a variation can point at "Rev 2 → Rev 3"
+// and mean something. Nothing was showing that.
+const revisionsOpen = ref(false)
+const revisions = ref([])
+const loadingRevisions = ref(false)
+
+async function openRevisions() {
+  revisionsOpen.value = true
+  loadingRevisions.value = true
+  try {
+    revisions.value = await store.fetchBoqRevisions(projectId.value)
+  } finally {
+    loadingRevisions.value = false
+  }
+}
 
 // Switching project reloads both halves of the screen.
 watch(projectId, (id) => loadProject(id))
@@ -47,6 +71,32 @@ const drawings = computed(() => documents.drawingsFor(projectId.value))
 const activeDrawing = computed(
   () => drawings.value.find((d) => d.id === selectedDocId.value) || drawings.value[0] || null
 )
+
+// The drawing is fetched through a signed preview URL rather than assumed to
+// be inline on the document row.
+const drawingPreview = ref({ url: null, notice: '', loading: false })
+
+async function loadDrawingPreview(doc) {
+  if (!doc) {
+    drawingPreview.value = { url: null, notice: '', loading: false }
+    return
+  }
+  drawingPreview.value = { url: null, notice: '', loading: true }
+  const res = await documents.previewUrl(doc)
+  if (activeDrawing.value?.id !== doc.id) return
+  drawingPreview.value = {
+    url: res.url || null,
+    notice: res.url ? '' : res.notice || 'No preview is available for this file.',
+    loading: false,
+  }
+}
+
+watch(activeDrawing, (doc) => { loadDrawingPreview(doc) }, { immediate: true })
+
+const drawingPreviewKind = computed(() => {
+  if (!drawingPreview.value.url) return 'none'
+  return activeDrawing.value?.kind === 'Image' ? 'image' : 'frame'
+})
 
 const sections = computed(() => ['All', ...new Set(store.boqItems.map((i) => i.section))])
 const filtered = computed(() =>
@@ -81,6 +131,10 @@ async function generate() {
     return
   }
   if (generating.value) return
+  if (outOfCredits.value) {
+    toast("Your plan's AI credits are used up for this period — upgrade to keep generating", 'warning')
+    return
+  }
 
   // A drawing still being read has no measurements to bill from yet.
   const pending = drawings.value.filter((d) => d.status === 'Analyzing').length
@@ -101,6 +155,7 @@ async function generate() {
   localNotes.value = []
   activeSection.value = 'All'
   editingId.value = null
+  billing.fetchUsage()
 
   if (result.failed) {
     // A refusal the user can act on — nothing analysed yet, out of AI credits.
@@ -260,6 +315,10 @@ function confidenceColor(c) {
   if (c >= 90) return 'text-primary-dark'
   return 'text-warning'
 }
+
+// Analysis polling runs on a timer in the documents store; stop it when the
+// screen goes away, or navigating between projects leaves pollers behind.
+onBeforeUnmount(() => documents.stopWatching())
 </script>
 
 <template>
@@ -270,7 +329,10 @@ function confidenceColor(c) {
     <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
       <div>
         <h2 class="font-display text-2xl font-bold text-secondary">BOQ Workspace</h2>
-        <p class="mt-1 text-brand-muted">Lekki 4-Bedroom Duplex · <span class="font-mono text-sm">PRJ-1042</span></p>
+        <p class="mt-1 text-brand-muted">
+          <template v-if="store.current">{{ store.current.name }} · <span class="font-mono text-sm">{{ store.current.id }}</span></template>
+          <template v-else>No project selected yet.</template>
+        </p>
         <p v-if="store.boqSources.length" class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-brand-light">
           <span class="badge" :class="boqSource === 'engine' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'">
             <Cpu class="h-3 w-3" /> {{ provenance.label }}
@@ -283,17 +345,19 @@ function confidenceColor(c) {
         <p v-if="store.boqSources.length && boqSource !== 'engine'" class="mt-1 max-w-2xl text-xs text-warning">
           {{ provenance.detail }}
         </p>
-        <p v-else class="mt-1 flex items-center gap-1.5 text-xs text-warning">
-          <Cpu class="h-3.5 w-3.5 shrink-0" /> Sample BOQ — upload a drawing and regenerate to build it from your own plans.
+        <p v-else-if="!store.boqItems.length" class="mt-1 flex items-center gap-1.5 text-xs text-brand-light">
+          <Cpu class="h-3.5 w-3.5 shrink-0" /> No bill yet — upload a drawing and generate one, or add items by hand.
         </p>
+        <ProjectSwitcher class="mt-3" />
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn-outline btn-md" @click="uploadDrawing"><Upload class="h-4 w-4" /> Upload drawing</button>
+        <button class="btn-outline btn-md" title="Revision history" @click="openRevisions"><History class="h-4 w-4" /> Revisions</button>
         <button class="btn-outline btn-md" @click="exportBoq"><Download class="h-4 w-4" /> Export</button>
         <button
           class="btn-primary btn-md"
-          :disabled="generating || !drawings.length"
-          :title="drawings.length ? 'Rebuild the BOQ from the uploaded drawings' : 'Upload a drawing first'"
+          :disabled="generating || !drawings.length || outOfCredits"
+          :title="outOfCredits ? 'No AI credits left this period' : drawings.length ? 'Rebuild the BOQ from the uploaded drawings' : 'Upload a drawing first'"
           @click="generate"
         >
           <Sparkles class="h-4 w-4" :class="{ 'animate-spin': generating }" />
@@ -301,6 +365,15 @@ function confidenceColor(c) {
         </button>
       </div>
     </div>
+
+    <!-- Generating reads every drawing through the model; that costs a credit. -->
+    <p v-if="outOfCredits" class="flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-brand-muted">
+      <AlertTriangle class="h-4 w-4 shrink-0 text-warning" />
+      Your plan's AI credits are used up for this period, so drawings cannot be read. Upgrade on the billing page.
+    </p>
+    <p v-else-if="creditsLeft !== null && creditsLeft <= 10" class="rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-brand-muted">
+      {{ creditsLeft }} AI credit{{ creditsLeft === 1 ? '' : 's' }} left this period.
+    </p>
 
     <div class="grid gap-6 xl:grid-cols-3">
       <!-- Left: drawing viewer + AI -->
@@ -310,7 +383,7 @@ function confidenceColor(c) {
           <div class="flex items-center justify-between border-b border-brand-border-light px-4 py-3">
             <span class="flex min-w-0 items-center gap-2 text-sm font-semibold text-secondary">
               <Layers class="h-4 w-4 shrink-0 text-primary" />
-              <span class="truncate">{{ activeDrawing ? activeDrawing.name : 'Ground Floor Plan.pdf' }}</span>
+              <span class="truncate">{{ activeDrawing ? activeDrawing.name : 'No drawing selected' }}</span>
             </span>
             <span class="badge shrink-0"
               :class="generating ? 'bg-warning/10 text-warning' : boqSource === 'engine' ? 'bg-success/10 text-success' : 'bg-brand-border text-brand-muted'">
@@ -319,39 +392,39 @@ function confidenceColor(c) {
             </span>
           </div>
           <div class="relative aspect-[4/3] bg-secondary">
-            <!-- Faux blueprint -->
-            <svg viewBox="0 0 400 300" class="h-full w-full">
-              <defs>
-                <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#2D3D63" stroke-width="0.5" />
-                </pattern>
-              </defs>
-              <rect width="400" height="300" fill="#1B2540" />
-              <rect width="400" height="300" fill="url(#grid)" />
-              <rect x="60" y="50" width="280" height="200" fill="none" stroke="#6DCBFB" stroke-width="1.5" />
-              <line x1="60" y1="130" x2="200" y2="130" stroke="#6DCBFB" stroke-width="1" />
-              <line x1="200" y1="50" x2="200" y2="250" stroke="#6DCBFB" stroke-width="1" />
-              <rect x="80" y="70" width="100" height="40" fill="none" stroke="#1CA5F6" stroke-width="1" />
-              <rect x="220" y="70" width="100" height="40" fill="none" stroke="#1CA5F6" stroke-width="1" />
-              <rect x="220" y="150" width="100" height="80" fill="none" stroke="#1CA5F6" stroke-width="1" />
-              <circle cx="130" cy="90" r="3" fill="#2DC875" />
-              <circle cx="270" cy="90" r="3" fill="#2DC875" />
-              <text x="100" y="95" fill="#9AA3BB" font-size="8">Bedroom 1</text>
-              <text x="240" y="95" fill="#9AA3BB" font-size="8">Living</text>
-              <text x="240" y="195" fill="#9AA3BB" font-size="8">Kitchen</text>
-            </svg>
+            <!-- The selected drawing, from a short-lived signed URL. This used
+                 to be a hand-drawn "faux blueprint" with invented rooms, and the
+                 real file never showed because `dataUrl` only existed on demo
+                 fixtures. -->
             <img
-              v-if="activeDrawing && activeDrawing.kind === 'Image' && activeDrawing.dataUrl"
-              :src="activeDrawing.dataUrl"
+              v-if="drawingPreviewKind === 'image'"
+              :src="drawingPreview.url"
               :alt="activeDrawing.name"
               class="absolute inset-0 h-full w-full object-contain"
             />
-            <div class="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg bg-white/10 px-2.5 py-1.5 text-xs text-white backdrop-blur">
+            <iframe
+              v-else-if="drawingPreviewKind === 'frame'"
+              :src="drawingPreview.url"
+              :title="activeDrawing.name"
+              class="absolute inset-0 h-full w-full border-0 bg-white"
+            ></iframe>
+            <div v-else class="absolute inset-0 grid place-items-center px-6 text-center">
+              <div>
+                <Layers class="mx-auto h-10 w-10 text-white/30" />
+                <p class="mt-3 text-sm font-medium text-white/70">
+                  <template v-if="drawingPreview.loading">Opening the drawing…</template>
+                  <template v-else-if="!activeDrawing">Upload a drawing to see it here.</template>
+                  <template v-else>{{ drawingPreview.notice }}</template>
+                </p>
+              </div>
+            </div>
+
+            <div v-if="activeDrawing" class="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg bg-black/40 px-2.5 py-1.5 text-xs text-white backdrop-blur">
               <Cpu class="h-3.5 w-3.5 text-primary-light" />
-              <template v-if="boqSource === 'engine'">
-                {{ activeDrawing && activeDrawing.elements ? activeDrawing.elements : 0 }} elements detected
+              <template v-if="boqSource === 'engine' && activeDrawing.elements">
+                {{ activeDrawing.elements }} elements detected
               </template>
-              <template v-else>Preview only — drawing not read</template>
+              <template v-else>Not read by the engine yet</template>
             </div>
           </div>
         </div>
@@ -574,5 +647,45 @@ function confidenceColor(c) {
         </div>
       </div>
     </transition>
+
+    <!-- Revision history -->
+    <transition name="page">
+      <div v-if="revisionsOpen" class="fixed inset-0 z-[60] flex justify-end bg-secondary/40 backdrop-blur-sm" @click.self="revisionsOpen = false">
+        <div class="flex h-full w-full max-w-md flex-col bg-white shadow-card-hover">
+          <div class="flex items-center justify-between border-b border-brand-border-light px-5 py-4">
+            <div>
+              <h3 class="font-display font-bold text-secondary">Bill revisions</h3>
+              <p class="text-xs text-brand-light">Every regeneration is kept, so a variation can name what changed.</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click="revisionsOpen = false"><X class="h-5 w-5" /></button>
+          </div>
+          <div class="flex-1 space-y-2 overflow-y-auto p-4">
+            <p v-if="loadingRevisions" class="py-10 text-center text-sm text-brand-muted">Loading…</p>
+            <p v-else-if="!revisions.length" class="rounded-xl border border-dashed border-brand-border-light px-4 py-10 text-center text-sm text-brand-muted">
+              No revisions yet. Generating a bill from your drawings creates the first.
+            </p>
+            <div v-for="r in revisions" :key="r.id"
+              class="rounded-xl border p-3"
+              :class="store.boqRevision && r.id === store.boqRevision.id ? 'border-primary bg-primary/5' : 'border-brand-border-light'">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-sm font-semibold text-secondary">Revision {{ r.version }}</p>
+                <span class="badge shrink-0" :class="r.source === 'engine' ? 'bg-success/10 text-success' : 'bg-brand-border text-brand-muted'">
+                  {{ r.source === 'engine' ? 'Analyzed' : 'Entered by hand' }}
+                </span>
+              </div>
+              <p class="mt-1 text-xs text-brand-light">
+                {{ r.itemCount }} item{{ r.itemCount === 1 ? '' : 's' }} · {{ r.standard }} · {{ r.region }}
+                <template v-if="r.createdBy"> · {{ r.createdBy }}</template>
+                · {{ timeAgo(r.createdAt) }}
+              </p>
+              <p v-if="r.generatedFrom && r.generatedFrom.length" class="mt-1 text-[11px] text-brand-light">
+                from {{ r.generatedFrom.length }} drawing{{ r.generatedFrom.length === 1 ? '' : 's' }}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
   </div>
 </template>

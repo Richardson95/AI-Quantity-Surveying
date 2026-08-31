@@ -1,6 +1,6 @@
 <script setup>
-import { computed } from 'vue'
-import { Download, Trash2, Loader2, CheckCircle2, Eye } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { Download, Trash2, Loader2, CheckCircle2, Eye, Pencil, Check, X, AlertTriangle, Clock, FileText } from 'lucide-vue-next'
 import { useDocumentsStore } from '@/stores/documents'
 import { useToast } from '@/composables/useToast'
 
@@ -21,6 +21,17 @@ const { toast } = useToast()
 const items = computed(() =>
   props.drawingsOnly ? store.drawingsFor(props.scope) : store.forScope(props.scope)
 )
+
+// Ready      the engine read it and recorded what it found
+// Analyzing  a worker has it now
+// Pending    stored, but the engine is not configured so nothing will pick it up
+// Failed     the engine tried and could not read it
+const statusStyle = {
+  Ready: { label: 'Analyzed', cls: 'bg-success/10 text-success', icon: CheckCircle2 },
+  Analyzing: { label: 'Analyzing', cls: 'bg-warning/10 text-warning', icon: Loader2 },
+  Pending: { label: 'Not analyzed', cls: 'bg-brand-border text-brand-muted', icon: Clock },
+  Failed: { label: 'Could not read', cls: 'bg-danger/10 text-danger', icon: AlertTriangle },
+}
 
 const kindColor = {
   Drawing: 'bg-danger/10 text-danger',
@@ -62,6 +73,27 @@ async function preview(doc) {
   window.open(url, '_blank', 'noopener')
 }
 
+// Renaming was reachable through the API and the store but had no control.
+const renamingId = ref('')
+const draftName = ref('')
+
+function startRename(doc) {
+  renamingId.value = doc.id
+  draftName.value = doc.name
+}
+
+async function commitRename(doc) {
+  const next = draftName.value.trim()
+  renamingId.value = ''
+  if (!next || next === doc.name) return
+  try {
+    await store.rename(doc.id, next)
+    toast('Renamed')
+  } catch (err) {
+    toast(err.message || 'That file could not be renamed', 'warning')
+  }
+}
+
 async function remove(doc) {
   await store.remove(doc.id)
   toast(`${doc.name} removed`, 'info')
@@ -100,23 +132,31 @@ function when(iso) {
           {{ d.ext }}
         </div>
 
-        <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-semibold text-secondary">{{ d.name }}</p>
+        <div class="min-w-0 flex-1" @click.stop>
+          <input v-if="renamingId === d.id" v-model="draftName"
+            class="w-full rounded-md border border-brand-border px-2 py-1 text-sm font-semibold text-secondary focus:border-primary focus:outline-none"
+            @keydown.enter="commitRename(d)" @keydown.esc="renamingId = ''" @blur="commitRename(d)" />
+          <p v-else class="truncate text-sm font-semibold text-secondary">{{ d.name }}</p>
           <p class="truncate text-xs text-brand-light">
             {{ d.sizeLabel }} · {{ when(d.uploadedAt) }}
             <span v-if="d.status === 'Ready' && d.elements"> · {{ d.elements }} elements detected</span>
           </p>
         </div>
 
-        <span
-          class="badge shrink-0"
-          :class="d.status === 'Ready' ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning'"
-        >
-          <component :is="d.status === 'Ready' ? CheckCircle2 : Loader2" class="h-3 w-3" :class="d.status !== 'Ready' && 'animate-spin'" />
-          {{ d.status === 'Ready' ? 'Analyzed' : 'Analyzing' }}
+        <!-- Four real states. This used to collapse everything that was not
+             "Ready" into a spinning "Analyzing", so a failed read — and a
+             document queued behind an engine that is switched off — both span
+             forever, implying work that was never going to happen. -->
+        <span class="badge shrink-0" :class="statusStyle[d.status]?.cls || 'bg-brand-border text-brand-muted'">
+          <component :is="statusStyle[d.status]?.icon || FileText" class="h-3 w-3"
+            :class="d.status === 'Analyzing' && 'animate-spin'" />
+          {{ statusStyle[d.status]?.label || d.status }}
         </span>
 
         <div class="flex shrink-0 items-center gap-1" @click.stop>
+          <button class="grid h-8 w-8 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary" title="Rename" @click="startRename(d)">
+            <Pencil class="h-4 w-4" />
+          </button>
           <button class="grid h-8 w-8 place-items-center rounded-lg text-brand-light hover:bg-brand-border-light hover:text-primary" title="Preview" @click="preview(d)">
             <Eye class="h-4 w-4" />
           </button>

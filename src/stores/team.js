@@ -86,7 +86,19 @@ export const useTeamStore = defineStore('team', {
       await this.fetch({ force: true })
     },
 
-    /** Accepting an invitation is public — the invitee has no account yet. */
+    /**
+     * What this invitation is for, and which form the invitee needs. Public:
+     * the token was emailed to the address it names.
+     */
+    async lookupInvite(token) {
+      return api.post('/team/invitations/lookup', { token })
+    },
+
+    /**
+     * Accept it. Public, and it covers both arrivals:
+     *   no account yet  — `password` creates one on the invited address
+     *   already has one — `password` is that account's, and they move across
+     */
     async acceptInvite({ token, name, password }) {
       return api.post('/team/invitations/accept', {
         token,

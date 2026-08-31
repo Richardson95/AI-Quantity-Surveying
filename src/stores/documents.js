@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api, ApiError } from '@/services/api'
+import { api, ApiError, API_BASE } from '@/services/api'
 
 // ---------------------------------------------------------------------------
 // Uploaded drawings, plans and project documents.
@@ -232,7 +232,12 @@ export const useDocumentsStore = defineStore('documents', {
     async previewUrl(doc) {
       if (!doc) return { url: null, notice: 'Nothing to preview.' }
       try {
-        return await api.get('/documents/' + doc.id + '/preview')
+        const res = await api.get('/documents/' + doc.id + '/preview')
+        // The server streams the bytes itself now, and returns a path relative
+        // to the API root rather than a Cloudinary link — that link came back
+        // as an attachment, so browsers downloaded it instead of showing it.
+        if (res.url && res.relative) return { ...res, url: API_BASE + res.url }
+        return res
       } catch {
         return { url: null, notice: 'That preview could not be produced.' }
       }
@@ -252,11 +257,6 @@ export const useDocumentsStore = defineStore('documents', {
         /* already gone server-side — dropping it locally is still correct */
       }
       this.docs = this.docs.filter((d) => d.id !== id)
-    },
-
-    clearScope(scope) {
-      this.docs = this.docs.filter((d) => d.scope !== scope)
-      this.loadedScopes = this.loadedScopes.filter((s) => s !== scope)
     },
 
     /** Replaces one row in place, keeping the scope the list is grouped by. */

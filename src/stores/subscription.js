@@ -143,41 +143,6 @@ export const useSubscriptionStore = defineStore('subscription', {
       }
     },
 
-    /**
-     * Called only after a payment has been verified server-side.
-     * `reference` is kept so a charge can be traced back to Paystack.
-     */
-    activate({ plan, reference, amount, months = 1 }) {
-      const from = this.renewsOn && this.renewsOn > new Date() ? this.renewsOn : new Date()
-      const end = new Date(from.getTime())
-      end.setMonth(end.getMonth() + months)
-
-      this.status = 'active'
-      this.plan = plan
-      this.currentPeriodEnd = end.toISOString()
-      this.payments.unshift({
-        id: reference,
-        plan,
-        amount,
-        paidAt: new Date().toISOString(),
-        periodEnd: end.toISOString(),
-      })
-      this._persist()
-
-      // The server has already recorded the payment, so take its version
-      // rather than trusting what we just computed locally.
-      this.reload()
-    },
-
-    /** Resets local state on sign-out; the server owns the real trial. */
-    startTrial() {
-      this.status = 'trialing'
-      this.plan = null
-      this.trialStartedAt = new Date().toISOString()
-      this.currentPeriodEnd = null
-      this._persist()
-    },
-
     _persist() {
       try {
         localStorage.setItem(

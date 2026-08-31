@@ -207,6 +207,10 @@ export const useAuthStore = defineStore('auth', {
       if (patch.phone !== undefined) body.phone = patch.phone
       if (patch.company !== undefined) body.company = patch.company
       if (patch.role !== undefined) body.role = roleSlug(patch.role)
+      // Organization-wide settings; the server refuses these from a non-admin.
+      if (patch.industry !== undefined) body.industry = patch.industry
+      if (patch.country !== undefined) body.country = patch.country
+      if (patch.currency !== undefined) body.currency = patch.currency
       if (!Object.keys(body).length) return null
 
       const data = await api.patch('/auth/me', body)

@@ -49,12 +49,15 @@ async function sendInvite() {
     inviteError.value = 'That person is already on the team.'
     return
   }
+  // Someone who already has a BuildQ account elsewhere CAN be invited — they
+  // accept by signing in rather than signing up — so nothing else is refused
+  // here. The server has the final say.
 
   sending.value = true
   try {
     await store.invite({ name, email, role })
     inviteOpen.value = false
-    toast(`Invitation sent to ${email.trim()}`)
+    toast(`Invitation sent to ${email.trim()} — they can sign up or sign in to join`)
   } catch (err) {
     inviteError.value = err.message || 'That invitation could not be sent.'
   } finally {

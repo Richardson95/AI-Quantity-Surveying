@@ -54,8 +54,17 @@ function toggleNotif() {
   notifMenu.value = !notifMenu.value
   if (notifMenu.value) {
     userMenu.value = false
-    reports.fetchNotifications().then(() => reports.markAllRead())
+    reports.fetchNotifications()
   }
+}
+
+// Notifications carry the screen they refer to — a finished analysis points at
+// the takeoff, a settled payment at billing. Following one marks just that one
+// read rather than silently clearing the lot.
+function openNotification(n) {
+  reports.markRead(n.id)
+  notifMenu.value = false
+  if (n.link) router.push(n.link)
 }
 function toggleUser() {
   userMenu.value = !userMenu.value
@@ -300,16 +309,25 @@ function logout() {
 
           <transition name="page">
             <div v-if="notifMenu" class="absolute right-0 mt-2 w-80 overflow-hidden rounded-2xl border border-brand-border-light bg-white shadow-card-hover">
-              <div class="border-b border-brand-border-light px-4 py-3">
+              <div class="flex items-center justify-between border-b border-brand-border-light px-4 py-3">
                 <p class="text-sm font-semibold text-secondary">Notifications</p>
+                <button v-if="reports.hasUnread" class="text-xs font-semibold text-primary hover:underline" @click.stop="reports.markAllRead()">
+                  Mark all read
+                </button>
               </div>
               <div class="max-h-80 divide-y divide-brand-border-light overflow-y-auto">
                 <p v-if="!notifications.length" class="px-4 py-8 text-center text-sm text-brand-muted">Nothing new.</p>
-                <div v-for="n in notifications" :key="n.id" class="px-4 py-3 transition-colors hover:bg-brand-bg">
-                  <p class="text-sm font-semibold text-secondary">{{ n.title }}</p>
-                  <p class="mt-0.5 text-xs text-brand-muted">{{ n.detail }}</p>
-                  <p class="mt-0.5 text-[11px] text-brand-light">{{ n.time || timeAgo(n.createdAt) }}</p>
-                </div>
+                <button v-for="n in notifications" :key="n.id"
+                  class="flex w-full gap-2.5 px-4 py-3 text-left transition-colors hover:bg-brand-bg"
+                  :class="n.link ? 'cursor-pointer' : 'cursor-default'"
+                  @click="openNotification(n)">
+                  <span class="mt-1.5 h-2 w-2 shrink-0 rounded-full" :class="n.read ? 'bg-transparent' : 'bg-primary'"></span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block text-sm font-semibold text-secondary">{{ n.title }}</span>
+                    <span class="mt-0.5 block text-xs text-brand-muted">{{ n.detail }}</span>
+                    <span class="mt-0.5 block text-[11px] text-brand-light">{{ n.time || timeAgo(n.createdAt) }}</span>
+                  </span>
+                </button>
               </div>
             </div>
           </transition>

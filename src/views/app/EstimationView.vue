@@ -12,6 +12,7 @@ import { useRatesStore } from '@/stores/rates'
 import { api } from '@/services/api'
 import { formatFull } from '@/utils/format'
 import CostUpload from '@/components/CostUpload.vue'
+import ProjectSwitcher from '@/components/ProjectSwitcher.vue'
 
 const { toast } = useToast()
 const vendors = useVendorsStore()
@@ -259,6 +260,7 @@ async function reEstimate() {
           <template v-else-if="noBasis">No bill of quantities yet — there is nothing to price this job from.</template>
           <template v-else>Indicative figure — generate a BOQ to price this job from your drawings.</template>
         </p>
+        <ProjectSwitcher class="mt-3" />
       </div>
       <div class="flex items-center gap-2">
         <div class="flex items-center gap-2 rounded-xl border border-brand-border bg-white px-3 py-2">

@@ -1,9 +1,9 @@
 <script setup>
-import { computed, ref, onMounted, watch } from 'vue'
-import { useRoute, RouterLink } from 'vue-router'
+import { computed, ref, onMounted, watch , onBeforeUnmount } from 'vue'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
   ArrowLeft, MapPin, Building2, Calendar, FileSpreadsheet,
-  GitCompareArrows, FileText, Download, Users, FolderSearch,
+  GitCompareArrows, FileText, Download, Users, FolderSearch, Pencil, Trash2, X,
 } from 'lucide-vue-next'
 import AreaChart from '@/components/charts/AreaChart.vue'
 import { useProjectsStore } from '@/stores/projects'
@@ -14,6 +14,7 @@ import FileDropzone from '@/components/FileDropzone.vue'
 import DocumentList from '@/components/DocumentList.vue'
 
 const route = useRoute()
+const router = useRouter()
 const store = useProjectsStore()
 const documents = useDocumentsStore()
 const { toast } = useToast()
@@ -57,6 +58,89 @@ async function exportProject() {
   toast('Bill of quantities exported')
 }
 
+// --- Editing -----------------------------------------------------------------
+const PROJECT_TYPES = ['Residential', 'Commercial', 'Industrial', 'Renovation', 'Infrastructure']
+const PROJECT_STATUSES = ['In Progress', 'Tender', 'Completed', 'On Hold']
+
+const editOpen = ref(false)
+const savingEdit = ref(false)
+const editError = ref('')
+const edit = ref(null)
+
+function openEdit() {
+  const p = project.value
+  edit.value = {
+    name: p.name,
+    client: p.client,
+    location: p.location,
+    type: p.type,
+    status: p.status,
+    progress: p.progress,
+    budget: p.budget,
+    spent: p.spent,
+  }
+  editError.value = ''
+  editOpen.value = true
+}
+
+async function saveEdit() {
+  if (savingEdit.value) return
+  editError.value = ''
+  if (!edit.value.name.trim()) {
+    editError.value = 'Project name is required.'
+    return
+  }
+  if (!edit.value.client.trim()) {
+    editError.value = 'Client is required.'
+    return
+  }
+
+  savingEdit.value = true
+  try {
+    await store.updateProject(route.params.id, {
+      name: edit.value.name.trim(),
+      client: edit.value.client.trim(),
+      location: edit.value.location.trim(),
+      type: edit.value.type,
+      status: edit.value.status,
+      progress: Math.max(0, Math.min(100, Number(edit.value.progress) || 0)),
+      budget: Math.max(0, Math.round(Number(edit.value.budget) || 0)),
+      spent: Math.max(0, Math.round(Number(edit.value.spent) || 0)),
+    })
+    editOpen.value = false
+    toast('Project updated')
+  } catch (err) {
+    editError.value = err.message || 'Those changes could not be saved.'
+  } finally {
+    savingEdit.value = false
+  }
+}
+
+// --- Deleting ----------------------------------------------------------------
+// Deleting a project cascades to its drawings, bill, takeoff and variations, so
+// the name has to be typed out rather than confirmed with one click.
+const deleteOpen = ref(false)
+const deleteConfirm = ref('')
+const deleting = ref(false)
+
+const canDelete = computed(
+  () => deleteConfirm.value.trim().toLowerCase() === (project.value?.name || '').toLowerCase()
+)
+
+async function confirmDelete() {
+  if (deleting.value || !canDelete.value) return
+  deleting.value = true
+  try {
+    await store.removeProject(route.params.id)
+    toast(`${project.value?.name || 'Project'} deleted`, 'info')
+    router.replace('/app/projects')
+  } catch (err) {
+    toast(err.message || 'That project could not be deleted', 'warning')
+  } finally {
+    deleting.value = false
+  }
+}
+
 const statusColor = {
   'In Progress': 'bg-primary/10 text-primary-dark',
   Tender: 'bg-warning/10 text-warning',
@@ -85,6 +169,10 @@ const spend = computed(() => [
 ])
 const spendNotes = computed(() => spendSeries.value?.notes || [])
 const hasSpend = computed(() => months.value.length > 0)
+
+// Analysis polling runs on a timer in the documents store; stop it when the
+// screen goes away, or navigating between projects leaves pollers behind.
+onBeforeUnmount(() => documents.stopWatching())
 </script>
 
 <template>
@@ -128,7 +216,11 @@ const hasSpend = computed(() => months.value.length > 0)
           </div>
           <div class="flex gap-2">
             <RouterLink to="/app/boq" class="btn-outline btn-md"><FileSpreadsheet class="h-4 w-4" /> Open BOQ</RouterLink>
+            <button class="btn-outline btn-md" @click="openEdit"><Pencil class="h-4 w-4" /> Edit</button>
             <button class="btn-primary btn-md" @click="exportProject"><Download class="h-4 w-4" /> Export</button>
+            <button class="btn-outline btn-md !border-danger/40 !text-danger hover:!border-danger" title="Delete project" @click="deleteOpen = true">
+              <Trash2 class="h-4 w-4" />
+            </button>
           </div>
         </div>
       </div>
@@ -221,5 +313,79 @@ const hasSpend = computed(() => months.value.length > 0)
       </div>
 
     </div>
+
+    <!-- Edit project -->
+    <transition name="page">
+      <div v-if="editOpen" class="fixed inset-0 z-[60] flex items-end justify-center bg-secondary/50 p-0 backdrop-blur-sm sm:items-center sm:p-4" @click.self="editOpen = false">
+        <div class="w-full max-w-lg overflow-hidden rounded-t-2xl bg-white shadow-card-hover sm:rounded-2xl">
+          <div class="flex items-center justify-between border-b border-brand-border-light px-6 py-4">
+            <h3 class="font-display text-lg font-bold text-secondary">Edit project</h3>
+            <button class="btn btn-ghost btn-sm" @click="editOpen = false"><X class="h-5 w-5" /></button>
+          </div>
+          <form class="space-y-4 p-6" @submit.prevent="saveEdit">
+            <div>
+              <label class="label">Project name</label>
+              <input v-model="edit.name" class="input" required />
+            </div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div><label class="label">Client</label><input v-model="edit.client" class="input" required /></div>
+              <div><label class="label">Location</label><input v-model="edit.location" class="input" /></div>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="label">Type</label>
+                <select v-model="edit.type" class="input"><option v-for="t in PROJECT_TYPES" :key="t">{{ t }}</option></select>
+              </div>
+              <div>
+                <label class="label">Status</label>
+                <select v-model="edit.status" class="input"><option v-for="st in PROJECT_STATUSES" :key="st">{{ st }}</option></select>
+              </div>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div><label class="label">Budget (₦)</label><input v-model.number="edit.budget" type="number" min="0" step="100000" class="input" /></div>
+              <div><label class="label">Spent to date (₦)</label><input v-model.number="edit.spent" type="number" min="0" step="100000" class="input" /></div>
+            </div>
+            <div>
+              <label class="label">Completion — {{ edit.progress }}%</label>
+              <input v-model.number="edit.progress" type="range" min="0" max="100" class="w-full accent-primary" />
+            </div>
+            <p v-if="editError" class="text-sm font-medium text-danger">{{ editError }}</p>
+            <div class="flex gap-2 pt-2">
+              <button type="button" class="btn-outline btn-md flex-1" :disabled="savingEdit" @click="editOpen = false">Cancel</button>
+              <button type="submit" class="btn-primary btn-md flex-1" :disabled="savingEdit">{{ savingEdit ? 'Saving…' : 'Save changes' }}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </transition>
+
+    <!-- Delete project -->
+    <transition name="page">
+      <div v-if="deleteOpen" class="fixed inset-0 z-[70] flex items-center justify-center bg-secondary/50 p-4 backdrop-blur-sm" @click.self="deleteOpen = false">
+        <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-card-hover">
+          <div class="flex items-center justify-between border-b border-brand-border-light px-6 py-4">
+            <h3 class="font-display text-lg font-bold text-danger">Delete this project?</h3>
+            <button class="btn btn-ghost btn-sm" @click="deleteOpen = false"><X class="h-5 w-5" /></button>
+          </div>
+          <div class="space-y-4 p-6">
+            <p class="text-sm text-brand-muted">
+              This removes <span class="font-semibold text-secondary">{{ project.name }}</span> and everything under it —
+              its drawings, every bill revision, the takeoff and all variations. It cannot be undone.
+            </p>
+            <div>
+              <label class="label">Type the project name to confirm</label>
+              <input v-model="deleteConfirm" class="input" :placeholder="project.name" autocomplete="off" />
+            </div>
+            <div class="flex gap-2 pt-1">
+              <button type="button" class="btn-outline btn-md flex-1" :disabled="deleting" @click="deleteOpen = false">Cancel</button>
+              <button class="btn-md flex-1 btn-primary !bg-danger hover:!bg-danger" :disabled="!canDelete || deleting" @click="confirmDelete">
+                <Trash2 class="h-4 w-4" /> {{ deleting ? 'Deleting…' : 'Delete project' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
   </div>
 </template>

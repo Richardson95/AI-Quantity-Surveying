@@ -1,37 +1,53 @@
 <script setup>
-import { ref } from 'vue'
+import { API_BASE } from '@/services/api'
+import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { Check, Sparkles, ArrowRight } from 'lucide-vue-next'
 
-const annual = ref(true)
+// Prices come from the server's public service index, so the page cannot
+// advertise a figure the checkout does not charge. It used to hardcode
+// ₦65,000/month for Professional while the server billed ₦54,000.
+const plans = ref([])
+const loading = ref(true)
 
-const plans = [
-  {
-    name: 'Free Trial', desc: 'Explore the platform', monthly: 0, annualPrice: 0,
-    cta: 'Start free', highlight: false,
-    features: ['2 projects', 'Basic BOQ generation', '50 AI requests / mo', '500 MB storage', 'Excel & PDF export'],
-  },
-  {
-    name: 'Starter', desc: 'Freelance surveyors', monthly: 18000, annualPrice: 15000,
-    cta: 'Choose Starter', highlight: false,
-    features: ['5 active projects', 'Standard BOQ engine', '500 AI requests / mo', 'Basic reporting', 'Email support'],
-  },
-  {
-    name: 'Professional', desc: 'Construction companies', monthly: 65000, annualPrice: 54000,
-    cta: 'Choose Professional', highlight: true,
-    features: ['Unlimited projects', 'Advanced AI estimation', '2,000 AI requests / mo', 'Team collaboration', 'Custom templates', 'Analytics dashboard', 'Priority support'],
-  },
-  {
-    name: 'Enterprise', desc: 'Large firms & government', monthly: null, annualPrice: null,
-    cta: 'Contact sales', highlight: false,
-    features: ['Multi-organization support', 'API access & ERP integration', 'Unlimited AI requests', 'Dedicated infrastructure', 'Custom AI training', 'Advanced security & SSO', 'Dedicated success manager'],
-  },
-]
+// Copy only — never a price, a seat count or an allowance.
+const COPY = {
+  Starter: { desc: 'Freelance surveyors', cta: 'Choose Starter', highlight: false },
+  Professional: { desc: 'Construction companies', cta: 'Choose Professional', highlight: true },
+  Enterprise: { desc: 'Large firms & government', cta: 'Contact sales', highlight: false },
+}
+
+onMounted(async () => {
+  try {
+    const res = await fetch(`${API_BASE}/`)
+    const data = await res.json()
+    plans.value = (data.plans || []).map((p) => ({
+      name: p.name,
+      monthly: p.monthlyNaira,
+      seats: p.seats,
+      credits: p.aiCredits,
+      storage: p.storageGb,
+      // Built from the allowances the server actually enforces, so a feature
+      // list cannot promise something the plan does not grant.
+      features: [
+        p.seats === null ? 'Unlimited team seats' : `${p.seats} team seat${p.seats === 1 ? '' : 's'}`,
+        p.aiCredits === null ? 'Unlimited AI credits' : `${p.aiCredits.toLocaleString('en-NG')} AI credits / month`,
+        `${p.storageGb} GB document storage`,
+        'Drawing analysis, BOQ generation and the AI assistant',
+        'CSV export',
+      ],
+      ...(COPY[p.name] || { desc: '', cta: 'Get started', highlight: false }),
+    }))
+  } catch {
+    plans.value = []
+  } finally {
+    loading.value = false
+  }
+})
 
 function price(p) {
   if (p.monthly === null) return 'Custom'
-  const v = annual.value ? p.annualPrice : p.monthly
-  return v === 0 ? '₦0' : '₦' + v.toLocaleString('en-NG')
+  return p.monthly === 0 ? '₦0' : '₦' + p.monthly.toLocaleString('en-NG')
 }
 </script>
 
@@ -42,16 +58,15 @@ function price(p) {
       <h1 class="mt-4 font-display text-4xl font-extrabold text-secondary sm:text-5xl">Simple, transparent plans</h1>
       <p class="mx-auto mt-4 max-w-xl text-brand-muted">Choose the plan that fits your team. Upgrade, downgrade or cancel anytime.</p>
 
-      <!-- Toggle -->
-      <div class="mt-8 inline-flex items-center gap-3 rounded-full border border-brand-border bg-white p-1.5">
-        <button :class="!annual ? 'bg-secondary text-white' : 'text-brand-muted'" class="rounded-full px-5 py-2 text-sm font-semibold transition-colors" @click="annual = false">Monthly</button>
-        <button :class="annual ? 'bg-secondary text-white' : 'text-brand-muted'" class="rounded-full px-5 py-2 text-sm font-semibold transition-colors" @click="annual = true">
-          Annual <span class="text-success">−16%</span>
-        </button>
-      </div>
+      <p class="mt-3 text-sm text-brand-light">Billed monthly. Every plan starts with a 14-day free trial, no card required.</p>
     </div>
 
-    <div class="section mt-14 grid gap-6 lg:grid-cols-4">
+    <p v-if="loading" class="section mt-14 text-center text-sm text-brand-muted">Loading plans…</p>
+    <p v-else-if="!plans.length" class="section mt-14 text-center text-sm text-brand-muted">
+      Plans are unavailable right now. Please try again shortly.
+    </p>
+
+    <div v-else class="section mt-14 grid gap-6" :class="plans.length >= 4 ? 'lg:grid-cols-4' : 'lg:grid-cols-3'">
       <div v-for="p in plans" :key="p.name"
         class="card relative flex flex-col p-6"
         :class="p.highlight ? 'ring-2 ring-primary shadow-card-hover lg:-mt-3 lg:mb-3' : ''">

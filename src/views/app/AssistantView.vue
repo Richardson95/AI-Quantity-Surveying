@@ -1,15 +1,18 @@
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
-import { Sparkles, Send, Paperclip, FileSpreadsheet, Calculator, Lightbulb, ShieldCheck, User } from 'lucide-vue-next'
+import { Sparkles, Send, Paperclip, FileSpreadsheet, Calculator, Lightbulb, ShieldCheck, User, History, Trash2, X, AlertTriangle } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import { useAssistantStore } from '@/stores/assistant'
 import { useProjectsStore } from '@/stores/projects'
+import { useBillingStore } from '@/stores/billing'
+import { timeAgo } from '@/utils/format'
 
 const { toast } = useToast()
 const auth = useAuthStore()
 const store = useAssistantStore()
 const projects = useProjectsStore()
+const billing = useBillingStore()
 
 const firstName = auth.user.name.split(' ')[0]
 const input = ref('')
@@ -24,10 +27,36 @@ const projectId = computed(() => projects.currentProjectId)
 
 onMounted(async () => {
   store.greet(firstName)
-  await Promise.all([store.checkStatus(), projects.ensureProject()])
+  await Promise.all([store.checkStatus(), projects.ensureProject(), billing.fetchUsage()])
   store.fetchThreads()
   scrollDown()
 })
+
+// Every reply is a paid model call counted against the plan's allowance. Say so
+// before the send button stops working, not after.
+const creditsLeft = computed(() => billing.creditsLeft)
+const outOfCredits = computed(() => billing.creditsExhausted)
+
+// --- Past conversations ------------------------------------------------------
+// Threads are stored server-side and were being listed but never shown, so a
+// conversation you had yesterday was unreachable.
+const historyOpen = ref(false)
+
+async function openHistory() {
+  historyOpen.value = true
+  await store.fetchThreads()
+}
+
+async function openThread(t) {
+  await store.openThread(t.id)
+  historyOpen.value = false
+  scrollDown()
+}
+
+async function removeThread(t) {
+  await store.deleteThread(t.id)
+  if (!store.messages.length) store.greet(firstName)
+}
 
 const prompts = [
   { icon: FileSpreadsheet, text: 'Generate a BOQ for a 4-bedroom duplex' },
@@ -109,6 +138,9 @@ function render(t) {
           </span>
         </p>
       </div>
+      <button class="btn-ghost btn-sm shrink-0" title="Past conversations" @click="openHistory">
+        <History class="h-4 w-4" />
+      </button>
       <button v-if="messages.length > 1" class="btn-ghost btn-sm shrink-0" @click="newConversation">
         New chat
       </button>
@@ -150,6 +182,14 @@ function render(t) {
       </button>
     </div>
 
+    <p v-if="outOfCredits" class="mt-4 flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-brand-muted">
+      <AlertTriangle class="h-4 w-4 shrink-0 text-warning" />
+      Your plan's AI credits are used up for this period. Upgrade on the billing page to keep asking.
+    </p>
+    <p v-else-if="creditsLeft !== null && creditsLeft <= 10" class="mt-4 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-brand-muted">
+      {{ creditsLeft }} AI credit{{ creditsLeft === 1 ? '' : 's' }} left this period.
+    </p>
+
     <!-- Input -->
     <div class="mt-4 flex items-end gap-2 rounded-2xl border border-brand-border bg-white p-2 shadow-card focus-within:border-primary">
       <input ref="attachInput" type="file" class="hidden" @change="onAttach" />
@@ -157,7 +197,39 @@ function render(t) {
       <textarea v-model="input" rows="1" @keydown.enter.exact.prevent="send()"
         class="flex-1 resize-none bg-transparent py-2.5 text-sm text-secondary placeholder:text-brand-light focus:outline-none"
         placeholder="Ask anything about quantities, costs or specifications…"></textarea>
-      <button @click="send()" :disabled="!input.trim() || sending" class="btn-primary grid h-10 w-10 shrink-0 place-items-center !p-0"><Send class="h-4 w-4" /></button>
+      <button @click="send()" :disabled="!input.trim() || sending || outOfCredits" class="btn-primary grid h-10 w-10 shrink-0 place-items-center !p-0"><Send class="h-4 w-4" /></button>
     </div>
+
+    <!-- Past conversations -->
+    <transition name="page">
+      <div v-if="historyOpen" class="fixed inset-0 z-[60] flex justify-end bg-secondary/40 backdrop-blur-sm" @click.self="historyOpen = false">
+        <div class="flex h-full w-full max-w-sm flex-col bg-white shadow-card-hover">
+          <div class="flex items-center justify-between border-b border-brand-border-light px-5 py-4">
+            <h3 class="font-display font-bold text-secondary">Past conversations</h3>
+            <button class="btn btn-ghost btn-sm" @click="historyOpen = false"><X class="h-5 w-5" /></button>
+          </div>
+          <div class="flex-1 space-y-2 overflow-y-auto p-4">
+            <p v-if="!store.threads.length" class="rounded-xl border border-dashed border-brand-border-light px-4 py-10 text-center text-sm text-brand-muted">
+              Nothing yet. Conversations are saved as you have them.
+            </p>
+            <div v-for="t in store.threads" :key="t.id"
+              class="group flex items-start gap-3 rounded-xl border p-3 transition-colors"
+              :class="t.id === store.threadId ? 'border-primary bg-primary/5' : 'border-brand-border-light hover:border-primary/30 hover:bg-brand-bg'">
+              <button class="min-w-0 flex-1 text-left" @click="openThread(t)">
+                <p class="truncate text-sm font-semibold text-secondary">{{ t.title || 'Untitled conversation' }}</p>
+                <p class="mt-0.5 text-xs text-brand-light">
+                  {{ t.messages }} message{{ t.messages === 1 ? '' : 's' }} · {{ timeAgo(t.updatedAt) }}
+                </p>
+              </button>
+              <button class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-brand-light opacity-0 transition-opacity hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
+                title="Delete conversation" @click.stop="removeThread(t)">
+                <Trash2 class="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
   </div>
 </template>

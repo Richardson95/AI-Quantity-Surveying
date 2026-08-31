@@ -136,10 +136,5 @@ export const useTakeoffStore = defineStore('takeoff', {
       }
     },
 
-    reset() {
-      this.measurements = []
-      this.loadedProjectId = null
-      this.warnings = []
-    },
   },
 })

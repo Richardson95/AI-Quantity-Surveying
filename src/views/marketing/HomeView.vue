@@ -5,11 +5,15 @@ import {
   GitCompareArrows, BarChart3, Check, Star, Upload, Cpu, FileCheck2,
 } from 'lucide-vue-next'
 
+// What the product does, not numbers nobody measured. The previous four —
+// "70% faster", "98.2% quantity accuracy", "2,400+ professionals" — were
+// claims with nothing behind them; the accuracy figure was the same invented
+// number that used to sit on the analytics dashboard.
 const stats = [
-  { value: '70%', label: 'Faster estimation' },
-  { value: '<5min', label: 'To generate a BOQ' },
-  { value: '98.2%', label: 'Quantity accuracy' },
-  { value: '2,400+', label: 'Professionals' },
+  { value: 'PDF · DXF', label: 'Drawings read directly' },
+  { value: 'NIQS', label: 'Measurement standard' },
+  { value: 'Naira', label: 'Priced in your own rates' },
+  { value: '14 days', label: 'Free trial, no card' },
 ]
 
 const features = [
