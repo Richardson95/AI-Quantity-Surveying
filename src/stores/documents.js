@@ -155,22 +155,38 @@ export const useDocumentsStore = defineStore('documents', {
     watchJob(jobId, documentId, { attempt = 0 } = {}) {
       if (this.watching[jobId]) return
 
+      // Whatever happens, the row must not be left spinning on "Analyzing"
+      // forever. Stopping the poll means asking the server what the document's
+      // status actually is — a stuck spinner reads as "still working" when the
+      // truth may be "could not read this drawing".
+      const stop = async () => {
+        delete this.watching[jobId]
+        await this.refreshDocument(documentId)
+      }
+
+      let consecutiveErrors = 0
+
       const tick = async () => {
         try {
           const job = await api.get('/analyze/' + jobId)
+          consecutiveErrors = 0
           if (job.status === 'succeeded' || job.status === 'failed') {
-            delete this.watching[jobId]
-            await this.refreshDocument(documentId)
+            await stop()
             return
           }
         } catch {
-          delete this.watching[jobId]
-          return
+          // A dropped request or a rate-limit reply is not a verdict on the
+          // job. Keep asking; only a run of failures means give up.
+          consecutiveErrors += 1
+          if (consecutiveErrors >= 5) {
+            await stop()
+            return
+          }
         }
         // Back off gently, and give up rather than polling a stuck job forever.
         attempt += 1
         if (attempt > 40) {
-          delete this.watching[jobId]
+          await stop()
           return
         }
         this.watching[jobId] = setTimeout(tick, Math.min(2000 + attempt * 500, 8000))
@@ -186,7 +202,9 @@ export const useDocumentsStore = defineStore('documents', {
         if (data.analysis && ['queued', 'running'].includes(data.analysis.status)) {
           this.watchJob(data.analysis.id, documentId)
         } else {
-          this._merge(documentId, data.document)
+          this._merge(documentId, data.document, {
+            analysisError: data.analysis?.error || null,
+          })
         }
       } catch {
         /* the document may have been deleted underneath us */
@@ -196,7 +214,7 @@ export const useDocumentsStore = defineStore('documents', {
     async refreshDocument(documentId) {
       try {
         const data = await api.get('/documents/' + documentId)
-        this._merge(documentId, data.document)
+        this._merge(documentId, data.document, { analysisError: data.analysis?.error || null })
         return data
       } catch {
         return null
@@ -260,11 +278,11 @@ export const useDocumentsStore = defineStore('documents', {
     },
 
     /** Replaces one row in place, keeping the scope the list is grouped by. */
-    _merge(id, incoming) {
+    _merge(id, incoming, extra = {}) {
       if (!incoming) return
       const i = this.docs.findIndex((d) => d.id === id)
       if (i === -1) return
-      this.docs[i] = { ...incoming, scope: this.docs[i].scope }
+      this.docs[i] = { ...incoming, ...extra, scope: this.docs[i].scope }
     },
 
   },

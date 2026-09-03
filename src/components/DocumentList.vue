@@ -141,6 +141,12 @@ function when(iso) {
             {{ d.sizeLabel }} · {{ when(d.uploadedAt) }}
             <span v-if="d.status === 'Ready' && d.elements"> · {{ d.elements }} elements detected</span>
           </p>
+          <!-- A failed read says why. "Could not read" on its own leaves the
+               user re-uploading the same file and getting the same silence. -->
+          <p v-if="d.status === 'Failed' && d.analysisError" class="mt-0.5 truncate text-xs text-danger"
+            :title="d.analysisError">
+            {{ d.analysisError }}
+          </p>
         </div>
 
         <!-- Four real states. This used to collapse everything that was not
