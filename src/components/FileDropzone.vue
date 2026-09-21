@@ -26,8 +26,16 @@ const busy = ref(false)
 // highlight doesn't flicker as the pointer crosses child elements.
 let dragDepth = 0
 
+// The ceiling depends on the storage plan, so it is read from the server the
+// first time a dropzone mounts rather than hard-coded here.
+docs.fetchLimits()
+
 const hintText = computed(
-  () => props.hint || `PDF, DWG, DXF, RVT, IFC, images and spreadsheets · up to ${MAX_FILE_MB} MB each`
+  () =>
+    props.hint ||
+    `PDF, DWG, DXF, RVT, IFC, images and spreadsheets · up to ${
+      docs.maxFileMb ?? MAX_FILE_MB
+    } MB each`
 )
 
 function browse() {

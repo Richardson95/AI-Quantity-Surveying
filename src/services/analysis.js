@@ -20,6 +20,42 @@
 import { api, ApiError } from '@/services/api'
 import { normalizeUnit } from '@/utils/units'
 
+/**
+ * Per-item provenance. A bill is not simply measured or not: some lines come
+ * off the geometry, some off a schedule printed on the sheet, and some are a
+ * stated assumption standing in for work the drawing never detailed. A roof
+ * carcass that is assumed and says so is worth more than a roof carcass that is
+ * missing, so the table has to be able to tell the reader which it is looking
+ * at.
+ */
+export const BASIS_LABELS = {
+  read: {
+    label: 'Read',
+    detail: 'A dimension, schedule row or annotated area taken off your drawing.',
+    tone: 'bg-success/10 text-success',
+  },
+  counted: {
+    label: 'Counted',
+    detail: 'Counted from symbols on the sheet.',
+    tone: 'bg-success/10 text-success',
+  },
+  derived: {
+    label: 'Derived',
+    detail: 'Computed from a measured quantity plus an assumption. Check the rule below it.',
+    tone: 'bg-primary/10 text-primary-dark',
+  },
+  assumed: {
+    label: 'Assumed',
+    detail: 'The drawings do not show this work. The quantity rests on a standard rule — check it.',
+    tone: 'bg-warning/15 text-warning',
+  },
+  manual: {
+    label: 'Entered',
+    detail: 'Typed in by hand. Nothing was measured.',
+    tone: 'bg-brand-border-light text-brand-muted',
+  },
+}
+
 /** Provenance for the badge. Only the engine can produce a measured figure. */
 export const SOURCE_LABELS = {
   engine: { label: 'Analyzed', detail: 'Measured from your drawing by the analysis engine.' },
@@ -81,6 +117,11 @@ export async function buildBoq(docs = [], { projectId, standard = 'NIQS', region
       unit: normalizeUnit(i.unit),
       qty: Number(i.qty) || 0,
       rate: Number(i.rate) || 0,
+      // How the figure was arrived at, and — for an assumption — the rule it
+      // followed. An older server that sends neither leaves both null, and the
+      // table falls back to showing confidence alone.
+      basis: BASIS_LABELS[i.basis] ? i.basis : null,
+      assumption: i.assumption || null,
       confidence: toPercent(i.confidence),
       sources: i.sources || [],
     }))

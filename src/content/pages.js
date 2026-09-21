@@ -153,7 +153,7 @@ export const pages = {
           'BIM models — RVT, IFC',
           'Images — PNG, JPG (useful for scanned or photographed plans)',
           'Data — XLSX, XLS, CSV for rate libraries; DOCX, DOC for specifications',
-          'Maximum 25 MB per file',
+          'Per-file size limit is shown on the upload screen (currently 10 MB)',
         ],
       },
       {

@@ -381,12 +381,48 @@ Cover gradients in use: `from-primary to-primary-dark`,
   "qty":        142,
   "rate":       78000,               // naira per unit
   "section":    "Substructure",
+  "basis":      "read",              // read|counted|derived|assumed|manual
+  "assumption": null,                // prose — REQUIRED unless basis is read/counted
   "confidence": 92,                  // 0-100, or null when not measured
   "sources":    ["Foundation Layout.dwg"]
 }
 ```
 
 Amount is always computed as `qty × rate`; never stored.
+
+**`basis` — where the quantity came from.** A bill that only distinguishes
+"analysed" from "not analysed" cannot express the ordinary reality of a set of
+drawings: some things are drawn and measurable, some are computed from what was
+drawn, and some are real work the drawings never detail.
+
+The engine already separated `read` / `counted` / `derived` internally; it threw
+the distinction away before storing the bill. These are those same values, now
+persisted, plus two the bill needs:
+
+| `basis` | Meaning | `confidence` | `assumption` |
+| --- | --- | --- | --- |
+| `read` | A dimension, schedule row or annotated area taken off the drawing | 0-100 | `null` |
+| `counted` | Symbols counted on the sheet — doors, windows, columns | 0-100 | `null` |
+| `derived` | Computed from something measured plus an assumption (slab volume from a read area and an assumed thickness) | **`null`** | **required** |
+| `assumed` | The drawings do not show this work at all; the quantity rests on a standard rule | **`null`** | **required** |
+| `manual` | Entered or edited by a person | `null` | `null` |
+
+**A quantity nothing measured carries no confidence.** Not a low one, not a
+capped one — none. This is the rule the engine was built on ("a confidence score
+on a number nothing measured is a lie") and it holds for `assumed` exactly as it
+did for `derived`. What such an item carries instead is its basis and the
+written rule behind it, which a surveyor can actually check; a manufactured
+percentage is not checkable by anyone.
+
+`assumption` states that rule in the surveyor's own terms, e.g. *"Roof carcass
+not detailed. Timber at 0.045 m³ per m² of true roof area, on a plan-projected
+roof of 214 m² with 30° pitch assumed from the elevation."* An assumption the
+engine fails to write down is replaced with a line saying so and a warning
+note — an unstated assumption is indistinguishable from an invention.
+
+An `assumed` item is a real line in the bill with a real quantity. Omitting it
+is not the safe choice: a bill that silently leaves out the roof carcass reads
+as complete and prices 4-6% light.
 
 **Sections, in bill order, with code letters:**
 
@@ -437,6 +473,39 @@ ordinal within its section — i.e. A1.1, A1.2, A1.3, A2.1, A2.2 …
 Accepted upload types (`ACCEPTED_TYPES`):
 `.pdf,.dwg,.dxf,.rvt,.ifc,.png,.jpg,.jpeg,.xlsx,.xls,.csv,.docx,.doc`
 Max file size (`MAX_FILE_MB`): **25 MB**.
+
+**The ceiling must hold end to end — and today it does not.** Both ends of the
+app agree on 25 MB: the dropzone (`MAX_FILE_MB = 25`) and multer
+(`MAX_FILE_BYTES = 25 * 1024 * 1024`). The refusal at 10 MB comes from neither.
+It comes from **Cloudinary**, whose free plan caps a single raw upload at 10 MB —
+below what both ends of this app accept, and invisible to both until it objects.
+
+Worse, the rejection was swallowed: `uploadDocument` turned every Cloudinary
+failure into *"Upload failed. Please try again."* Retrying never helps with a
+file that is too big, so the real ceiling could only be found by shrinking the
+file until it went through — losing exactly the raster detail the engine reads.
+
+`storage.service.js` now relays the provider's own reason and returns
+`code: "file_too_large"` with the actual cap in the message. The remaining fix
+is a data one, and there are only two routes to it:
+
+| Route | Effect |
+| --- | --- |
+| Raise the storage plan's per-file limit | Cloudinary Plus lifts raw uploads to 100 MB. One setting, no code. |
+| Presigned direct-to-storage upload | Takes the app server out of the body path entirely — see below. |
+
+Note the hops that are **not** the problem, so they are not chased: multer and
+the dropzone are both at 25 MB, `express.json({ limit: "5mb" })` does not apply
+to multipart uploads, and Render imposes no request-body cap of its own.
+
+**Beyond 25 MB.** A full architectural set genuinely exceeds this, and reducing
+a file to fit loses the raster detail the engine reads. The route past it is a
+**presigned direct-to-storage upload** — `POST /projects/{id}/documents/presign`
+returns a signed PUT URL, the browser sends the file straight to object storage,
+and the client then posts the returned object key to
+`/projects/{id}/documents` to register it and queue analysis. That takes the
+proxy and the app server out of the body path entirely and lifts the practical
+ceiling to a few hundred MB.
 
 Only `Drawing|CAD|BIM|Image` count as drawings for analysis and BOQ generation.
 
@@ -550,9 +619,26 @@ Each category has `tagline`, a lucide `icon` name, and an `accent` gradient.
   "unit":   "bag",
   "rate":   9500,
   "change": 4.2,                     // % movement over 30 days; 0 = no data
-  "region": "Lagos"                  // Lagos|Abuja|Port Harcourt|Kano
+  "region": "Lagos",                 // Lagos|Abuja|Port Harcourt|Kano
+  "scope":  "global",                // global (curated by BuildQ) | organization
+  "effectiveFrom": "2026-09-01",     // date the price was surveyed
+  "source": "BuildQ market survey",  // where it came from
+  "isDemo": false,                   // a placeholder figure, not a market price
+  "stale":  false                    // not re-surveyed in 90 days
 }
 ```
+
+**A rate is only as good as its date.** `effectiveFrom`, `source` and `isDemo`
+already exist on the rate model — what was missing was any use of them. A rate
+with no recent date cannot be defended in a tender, and in a market that moves
+20-40% a year an undated figure is worse than no figure. So:
+
+- `stale` is computed on serialization: **90 days** since `effectiveFrom`.
+- A generated bill carries its own pricing basis, so the screen can say *"Lagos
+  rates as at 1 Sep 2026"* rather than showing a timeless total:
+  `"rates": { "region": "Lagos", "asOf": "2026-09-01", "priced": 84,
+  "unpriced": 3, "staleCount": 0, "demoCount": 0, "libraryEmpty": false }`.
+- Stale rates, demo rates and an empty library each produce a bill note.
 
 ### Cost line (user-uploaded cost data)
 
@@ -862,7 +948,7 @@ aliases (`m2`, `M2`, `SQM`, `sq.m`, `㎡` → `m²`; `nr`, `pcs`, `each`, `EA` �
 | Excavation, filling, hardcore | `m³` | cubic |
 | **In-situ concrete (all of it)** | **`m³`** | slabs, beams, columns, footings, blinding |
 | **Formwork** | **`m²`** | billed separately from the concrete |
-| **Reinforcement** | **`tonne`** | |
+| **Reinforcement** | **`tonne`** | **one item per bar diameter** — see below |
 | Blockwork and walling | `m²` | |
 | Plaster, render, paint, tiling, screed | `m²` | |
 | Damp-proof membrane | `m²` | |
@@ -874,6 +960,111 @@ aliases (`m2`, `M2`, `SQM`, `sq.m`, `㎡` → `m²`; `nr`, `pcs`, `each`, `EA` �
 **Never bill a slab in `m²` as if it were concrete.** A slab area measured off a
 plan yields **two** items: concrete by volume (area × thickness) and formwork to
 the soffit by area.
+
+### Reinforcement must be split by bar size
+
+A single line reading *"Reinforcement — 18.4 tonne"* is not a billable item. Bar
+sizes carry different rates, different suppliers and different cutting
+schedules, and a bender cannot work from a total. **The engine must emit one
+item per bar diameter per element group**, never a project-wide total:
+
+```jsonc
+{ "code": "A2.1", "desc": "High-yield reinforcement, Y12 bars, to foundation bases",
+  "unit": "tonne", "qty": 2.84, "basis": "read", "confidence": 88 },
+{ "code": "A2.2", "desc": "High-yield reinforcement, Y16 bars, to foundation bases",
+  "unit": "tonne", "qty": 5.10, "basis": "read", "confidence": 88 },
+{ "code": "A2.3", "desc": "Mild steel links/stirrups, R8 bars, to foundation bases",
+  "unit": "tonne", "qty": 0.62, "basis": "assumed", "confidence": null,
+  "assumption": "Link spacing not shown. R8 at 200mm centres assumed." }
+```
+
+**Sizes to recognise:** `R8`, `R10` (mild steel — links and stirrups), `Y10`,
+`Y12`, `Y16`, `Y20`, `Y25`, `Y32` (high-yield — main bars), and BRC mesh by
+reference (`A142`, `A193`, `A252`, `A393`), which is billed in `m²`.
+
+**Where the sizes come from, in order of preference:**
+
+1. **A bar bending schedule on the drawing** — read it. Those items are
+   `basis: "read"`. It is the only source that yields exact figures.
+2. **Section marks and rebar callouts** (`4Y16`, `Y12-150 B/T`, `R8@200`) —
+   parse diameter, count and spacing. `basis: "read"`.
+3. **Neither** — fall back to the distribution below, and mark every resulting
+   item `basis: "assumed"` with the rule named in `assumption`.
+
+**Fallback distribution**, applied to an element's total steel tonnage when the
+drawing carries no callouts (Nigerian residential practice):
+
+| Element | Steel ratio | Y20 | Y16 | Y12 | R8 links |
+| --- | --- | --- | --- | --- | --- |
+| Foundation bases / strip footings | 90 kg/m³ | — | 55% | 35% | 10% |
+| Columns | 140 kg/m³ | 45% | 30% | — | 25% |
+| Beams | 130 kg/m³ | 35% | 35% | 10% | 20% |
+| Suspended slabs | 110 kg/m³ | — | 20% | 75% | 5% |
+| Ground-floor slab | A142 mesh | billed in `m²`, × 1.10 for laps | | | |
+
+The per-element ratios must still reconcile to the 100-130 kg/m³ project-wide
+sanity check below. Add **7.5% for laps and wastage** to every bar item, and say
+so in the description.
+
+### Bill completeness — what must never be silently dropped
+
+The failure mode that costs a surveyor most is not a wrong number, it is a
+**missing line**. A bill with no wall screeding in it still looks finished. The
+engine must therefore work from a **standard bill skeleton**, not only from what
+it managed to detect: for every trade below it either bills the item, or emits a
+note saying why it did not.
+
+**Mandatory items — whenever the geometry they depend on exists:**
+
+| Trade | Item | Unit | Depends on | Derivation |
+| --- | --- | --- | --- | --- |
+| Finishes | **Cement/sand render (screeding) to walls, internal** | `m²` | wall area | both faces, less openings |
+| Finishes | **Cement/sand render (screeding) to walls, external** | `m²` | external wall area | external face, less openings |
+| Finishes | Skim/putty finish to rendered walls | `m²` | rendered area | = render area |
+| Finishes | Floor screed to receive finish | `m²` | floor area | = floor area |
+| Finishes | Ceiling finish (PVC / POP / skim) | `m²` | floor area | × 1.0 |
+| Finishes | Paint to walls and ceilings | `m²` | rendered area | walls + ceilings |
+| Finishes | Skirting | `m` | room perimeter | less door openings |
+| Roofing | **Roof carcass — rafters, purlins, wall plates, struts** | `m³` | roof area | 0.045 m³ per m² (below) |
+| Roofing | Roof covering | `m²` | roof area | plan area ÷ cos(pitch) |
+| Roofing | Ceiling noggins / battens | `m` | ceiling area | 0.9 m centres |
+| Roofing | Fascia and barge board | `m` | roof perimeter | + 0.6 m eaves each side |
+| Roofing | Rainwater gutters and downpipes | `m` | eaves length | |
+| Substructure | Anti-termite treatment | `m²` | footprint | |
+| Substructure | Damp-proof membrane / DPC | `m²` / `m` | footprint / wall run | |
+| Substructure | Hardcore filling and blinding | `m³` | footprint | 150mm hardcore, 50mm blinding |
+| Superstructure | Lintels over openings | `m³` | opening schedule | opening width + 0.45 m bearing |
+| External | Disposal of excavated material | `m³` | excavation volume | bulking × 1.25 |
+
+**Roof carcass when no roof plan was supplied.** This is the case the platform
+currently gives up on, and it should not: a roof is derivable from the footprint
+and the elevations, and where the elevations are absent a pitch can be assumed
+for the region. Bill it as `assumed`:
+
+| Input | Rule |
+| --- | --- |
+| Roof plan area | Building footprint + 0.6 m eaves overhang all round |
+| Pitch | From an elevation where drawn; otherwise **30°** (Nigerian aluminium / longspan practice) |
+| True roof area | plan area ÷ cos(pitch) — × 1.155 at 30° |
+| Carcass timber | **0.045 m³ per m²** of true roof area (rafters 600 c/c, purlins 900 c/c, wall plates, struts) |
+| Covering | true roof area × 1.10 for side and end laps |
+| Ceiling | footprint area × 1.0 |
+
+Each of these lines carries `basis: "assumed"`, `confidence: null`, and an
+`assumption` naming the pitch and the timber rate used — so the surveyor can
+change the pitch and have the bill follow.
+
+**How a gap is reported.** When the engine truly cannot bill something — no
+geometry at all to hang an assumption on — it emits a note rather than going
+silent:
+
+```jsonc
+{ "type": "warning", "section": "Services",
+  "text": "No mechanical or electrical drawings supplied. Services are not billed — expect 12-18% of the contract sum to be missing." }
+```
+
+`notes[]` gains an optional `section`, so the workspace can show a gap against
+the section it belongs to rather than only at the head of the bill.
 
 ### Standard conversion factors used
 
@@ -1062,6 +1253,7 @@ frontend already models `Analyzing → Ready`.
 | GET | `/projects/{id}/boq` |
 | POST | `/projects/{id}/boq/generate` — from documents, async |
 | POST | `/projects/{id}/boq/items` |
+| POST | `/projects/{id}/boq/items/quantify` — measure a described item off the drawings |
 | PATCH | `/boq/items/{itemId}` |
 | DELETE | `/boq/items/{itemId}` |
 | POST | `/projects/{id}/boq/import` — from takeoff measurements |
@@ -1108,7 +1300,32 @@ frontend already models `Analyzing → Ready`.
 | GET | `/rates/{id}/history` — for 30-day change |
 
 Rates are partly **global** (curated market data, updated by BuildQ) and partly
-**per-organization** (a firm's own schedule). The API must distinguish them.
+**per-organization** (a firm's own schedule). The API must distinguish them via
+`scope`, and the API refuses any write to a `global` rate.
+
+**A generated bill must arrive priced.** Requiring a firm to upload its own
+schedule before the platform can total a bill inverts the value of the product:
+the reason to generate a BOQ automatically is to get a defensible number without
+first doing the pricing work. So:
+
+- BuildQ maintains a **curated global rate library per region**, covering at
+  minimum every item in the standard bill skeleton (§9), each with an `asOf`
+  date and a `source`.
+- `POST /projects/{id}/boq/generate` prices **every** item from that library for
+  the project's region, at generation time. An item the library cannot price
+  comes back with `rate: 0` and a note naming it — never a guessed rate.
+- The response carries the pricing basis so the screen can state it:
+  `"rates": { "region": "Lagos", "asOf": "2026-09-01", "scope": "global",
+  "priced": 84, "unpriced": 3, "staleCount": 0 }`.
+- A firm's own rate for the same item **overrides** the curated one. Precedence
+  is: the project's own rate → the firm's schedule → the curated global library.
+- The library needs a maintenance cadence — **monthly** for materials, quarterly
+  for labour and plant — and `GET /rates/{id}/history` is what makes the 30-day
+  `change` figure real rather than a placeholder.
+
+| Method | Path |
+| --- | --- |
+| GET | `/rates/coverage?region=` — which skeleton items the library can price |
 
 ### Vendor marketplace
 
@@ -1241,7 +1458,84 @@ Response:
 }
 ```
 
-`notes[].type` ∈ `success|info|warning`.
+`notes[].type` ∈ `success|info|warning`. `notes[].section` is optional and, when
+present, is one of the seven bill sections (§6).
+
+Every item carries `basis` and, when `basis` is `"assumed"`, an `assumption`
+(§6). The response also carries the pricing basis:
+
+```jsonc
+"rates": { "region": "Lagos", "asOf": "2026-09-01", "scope": "global",
+           "priced": 84, "unpriced": 3, "staleCount": 0 }
+```
+
+### `POST /projects/{id}/boq/items/quantify`
+
+Implemented in `analysis.service.js` (`quantifyItem`) and routed with the same
+rate limiter and credit check as generation, because it costs an AI call.
+
+Adding a line by hand should not mean measuring it by hand. When a surveyor
+types *"225mm sandcrete block wall in cement mortar"* into the add-item form,
+the drawings that produced the rest of the bill can answer the quantity too —
+the geometry is already extracted; what is missing is only the mapping from that
+sentence to it.
+
+Request:
+
+```jsonc
+{ "desc": "225mm sandcrete block wall in cement mortar",
+  "section": "Superstructure",          // optional hint
+  "unit": "m²",                         // optional; the engine proposes one if omitted
+  "documentIds": ["DOC-123"] }          // optional; defaults to the project's drawings
+```
+
+Response `200` — a **proposal**, not a stored item:
+
+```jsonc
+{
+  "matched": true,
+  "section": "Superstructure",
+  "unit": "m²",
+  "qty": 412.6,
+  "basis": "read",
+  "confidence": 87,
+  "assumption": null,
+  "rate": 6800,
+  "rateAsOf": "2026-09-01T00:00:00.000Z",
+  "rateSource": "BuildQ market survey",
+  "rateIsDemo": false,
+  "unpricedReason": null,
+  "sources": ["Ground Floor Plan.pdf", "First Floor Plan.pdf"],
+  "workings": "External wall run 148.2 m × 3.0 m storey height = 444.6 m², less openings 32.0 m² = 412.6 m²",
+  "alternatives": [
+    { "description": "150mm block partition", "unit": "m²", "qty": 96.4, "confidence": 81 }
+  ]
+}
+```
+
+A `200` is returned when `matched` is false too — *"the drawings do not show
+that"* is a real answer, and the form falls back to manual entry rather than
+showing an error to dismiss:
+
+```jsonc
+{ "matched": false,
+  "reason": "No staircase was measured on the supplied plans.",
+  "alternatives": [] }
+```
+
+A proposal that would break a §9 convention is refused rather than offered.
+Accepting one is a single click, and the whole point of the endpoint is that the
+surveyor did not do the sums themselves.
+
+- `workings` is required whenever `matched` is true. The surveyor is accepting a
+  number they did not measure; they must be able to see how it was reached.
+- `matched: false` with a `reason` when the description maps to nothing in the
+  drawings (*"No staircase found on the supplied plans"*). The form then falls
+  back to manual entry — which is the behaviour today, so this degrades safely.
+- The endpoint **stores nothing**. The client posts the accepted figure to
+  `/projects/{id}/boq/items` as it does now, with `basis` carried through.
+- Matching should be semantic, not string equality: *"blockwork"*, *"9-inch
+  block wall"* and *"225mm sandcrete blocks"* are the same item.
 
 ### Engine requirements
 
@@ -1268,8 +1562,16 @@ Response:
 - **Never** return a quantity in a unit that does not match the item's
   measurement convention — concrete is always `m³`
 - Bill formwork **separately** from concrete
-- Omit `confidence` rather than inventing one
+- Split reinforcement **by bar diameter** (§9); never one aggregate tonnage
+- Work from the **standard bill skeleton** (§9). A trade that is not billed
+  produces a note; it never produces silence
+- Where the drawing does not detail the work, **assume and declare** — a line
+  with `basis: "assumed"`, a capped confidence and a written `assumption` beats
+  an absent line
+- Set `basis` on every item; omit `confidence` rather than inventing one
 - Always populate `sources` so a figure can be traced to a drawing
+- **Price every item** from the curated regional library, and return the `asOf`
+  date the prices carry (§11)
 - Analysis is slow: expose it as an **async job**, not a blocking request
 
 **Assistant**

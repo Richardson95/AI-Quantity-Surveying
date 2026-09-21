@@ -16,6 +16,11 @@ import { api, ApiError, API_BASE } from '@/services/api'
 export const ACCEPTED_TYPES =
   '.pdf,.dwg,.dxf,.rvt,.ifc,.png,.jpg,.jpeg,.xlsx,.xls,.csv,.docx,.doc'
 
+// The app's own ceiling, and the fallback before the server has been asked.
+// The number that actually applies comes from GET /uploads/config, because it
+// depends on the storage plan and this file cannot know it. Promising 25 MB
+// while the server refused at 10 is exactly how a surveyor ends up shrinking a
+// drawing until it fits, losing the detail the engine reads.
 export const MAX_FILE_MB = 25
 
 const EXT_KIND = {
@@ -43,6 +48,9 @@ export function formatBytes(bytes) {
 
 export const useDocumentsStore = defineStore('documents', {
   state: () => ({
+    // The real ceiling, once the server has told us. Null until then.
+    maxFileMb: null,
+    maxFileNote: '',
     docs: [],
     // Which scopes have been fetched, so a screen switch does not re-request.
     loadedScopes: [],
@@ -63,6 +71,24 @@ export const useDocumentsStore = defineStore('documents', {
   },
 
   actions: {
+    /**
+     * The upload ceiling that actually applies. Asked once; a failure leaves the
+     * conservative built-in in place rather than blocking uploads.
+     */
+    async fetchLimits() {
+      if (this.maxFileMb !== null) return this.maxFileMb
+      try {
+        const data = await api.get('/uploads/config')
+        this.maxFileMb = Number(data.maxMb) || MAX_FILE_MB
+        this.maxFileNote = data.cappedByProvider
+          ? `Your file storage plan caps uploads at ${this.maxFileMb} MB.`
+          : ''
+      } catch {
+        this.maxFileMb = MAX_FILE_MB
+      }
+      return this.maxFileMb
+    },
+
     /** Loads one project's documents. Safe to call on every mount. */
     async fetchForScope(scope, { force = false } = {}) {
       if (!scope || scope === 'library') return this.forScope(scope)
@@ -101,8 +127,12 @@ export const useDocumentsStore = defineStore('documents', {
       if (!allowed.includes(ext)) {
         return { ok: false, error: `${file.name}: .${ext} files aren't supported` }
       }
-      if (file.size > MAX_FILE_MB * 1024 * 1024) {
-        return { ok: false, error: `${file.name} is larger than ${MAX_FILE_MB} MB` }
+      const capMb = this.maxFileMb ?? MAX_FILE_MB
+      if (file.size > capMb * 1024 * 1024) {
+        return {
+          ok: false,
+          error: `${file.name} is ${(file.size / (1024 * 1024)).toFixed(1)} MB — larger than the ${capMb} MB limit`,
+        }
       }
       if (this.docs.some((d) => d.scope === scope && d.name === file.name && d.size === file.size)) {
         return { ok: false, error: `${file.name} has already been uploaded here` }

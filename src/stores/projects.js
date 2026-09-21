@@ -229,11 +229,34 @@ export const useProjectsStore = defineStore('projects', {
         qty: Number(data.qty),
         rate: Math.round(Number(data.rate) || 0),
         ...(data.sources ? { sources: data.sources } : {}),
+        // A line accepted from an engine proposal says so, and carries the
+        // workings it rests on. The server refuses to record a typed figure as
+        // `read` or `counted`, so an accepted proposal is `derived` at best —
+        // which is honest: a person reviewed it, nothing re-measured it.
+        ...(data.basis && data.basis !== 'manual'
+          ? { basis: data.basis, assumption: data.assumption }
+          : {}),
       })
       // Adding renumbers the whole bill, so re-read rather than push one row.
       await this.fetchBoq(projectId)
       if (res.notes) this.boqNotes = [...this.boqNotes, ...res.notes]
       return res.item
+    },
+
+    /**
+     * Measure a described item off the drawings already analysed for this
+     * project. Returns a PROPOSAL and stores nothing — the surveyor accepts it,
+     * and only then does addBoqItem write a line.
+     *
+     * `matched: false` is a real answer, not an error: the drawings genuinely
+     * may not show what was asked for, and the form falls back to manual entry.
+     */
+    async quantifyBoqItem({ desc, section, unit } = {}, projectId = this.currentProjectId) {
+      return api.post('/projects/' + projectId + '/boq/items/quantify', {
+        desc,
+        ...(section ? { section } : {}),
+        ...(unit ? { unit: normalizeUnit(unit) } : {}),
+      })
     },
 
     async updateBoqItem(id, patch = {}) {
@@ -247,8 +270,10 @@ export const useProjectsStore = defineStore('projects', {
       // Applied locally first so the table does not lag behind the keystroke.
       if (item) Object.assign(item, clean)
 
-      // `confidence` and `sources` are the server's to set, never the client's.
-      const { confidence, sources, ...body } = clean
+      // `confidence`, `sources`, `basis` and `assumption` describe how the
+      // server arrived at the figure. They are its to set, never the client's —
+      // editing a quantity by hand cannot retroactively make it measured.
+      const { confidence, sources, basis, assumption, ...body } = clean
       if (!Object.keys(body).length) return item
       if (body.rate != null) body.rate = Math.round(body.rate)
 

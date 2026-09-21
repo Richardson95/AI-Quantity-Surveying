@@ -7,7 +7,7 @@ import {
 import { useProjectsStore } from '@/stores/projects'
 import { useDocumentsStore } from '@/stores/documents'
 import { useBillingStore } from '@/stores/billing'
-import { buildBoq, SOURCE_LABELS } from '@/services/analysis'
+import { buildBoq, SOURCE_LABELS, BASIS_LABELS } from '@/services/analysis'
 import { useToast } from '@/composables/useToast'
 import { normalizeUnit, COMMON_UNITS, unitsCompatible, dimensionOf } from '@/utils/units'
 import { formatFull, timeAgo } from '@/utils/format'
@@ -227,10 +227,57 @@ function blankItem() {
 function openAddItem() {
   draft.value = blankItem()
   draftError.value = ''
+  proposal.value = null
   addOpen.value = true
 }
 
 const saving = ref(false)
+
+// ── Measuring a described item off the drawings ──────────────────────────────
+// Adding a line by hand should not mean measuring it by hand. The drawings that
+// produced the rest of the bill can usually answer the quantity too — the
+// geometry is already extracted, and what is missing is only the mapping from
+// the sentence to it.
+//
+// The result is a PROPOSAL. It fills the form and shows its workings; nothing
+// reaches the bill until the surveyor presses Add. A proposal that comes back
+// unmatched is not an error — the drawings may genuinely not show it — so the
+// form simply stays on manual entry.
+const measuring = ref(false)
+const proposal = ref(null)
+
+async function measureFromDrawings() {
+  const desc = draft.value.desc.trim()
+  if (!desc) {
+    draftError.value = 'Describe the work item first, then it can be measured.'
+    return
+  }
+
+  measuring.value = true
+  draftError.value = ''
+  proposal.value = null
+
+  try {
+    const p = await store.quantifyBoqItem({
+      desc,
+      section: draft.value.section,
+      unit: draft.value.unit.trim() || undefined,
+    })
+    proposal.value = p
+
+    if (p.matched) {
+      draft.value.unit = p.unit
+      draft.value.qty = p.qty
+      // Only overwrite a rate the surveyor has not set themselves.
+      if (p.rate && !draft.value.rate) draft.value.rate = p.rate
+      if (p.section) draft.value.section = p.section
+    }
+  } catch (err) {
+    draftError.value = err.message || 'The drawings could not be measured.'
+  } finally {
+    measuring.value = false
+  }
+}
 
 async function addItem() {
   if (saving.value) return
@@ -257,12 +304,29 @@ async function addItem() {
     // One call with the whole line. A hand-entered item carries no confidence —
     // there is nothing a machine was confident about — and the store and server
     // both leave it null rather than stamping it 100%.
+    // A proposal the surveyor accepted unchanged is recorded as derived from
+    // the drawings, with its workings as the rule it rests on. Edit the figure
+    // and that no longer describes it, so the line reverts to a typed one.
+    const accepted =
+      proposal.value?.matched &&
+      Number(draft.value.qty) === proposal.value.qty &&
+      normalizeUnit(draft.value.unit) === proposal.value.unit
+
     await store.addBoqItem({
       desc,
       section: draft.value.section,
       unit: normalizeUnit(draft.value.unit),
       qty: Number(draft.value.qty),
       rate: Number(draft.value.rate),
+      ...(accepted
+        ? {
+            basis: proposal.value.basis === 'assumed' ? 'assumed' : 'derived',
+            assumption:
+              proposal.value.assumption ||
+              proposal.value.workings ||
+              'Measured from the project drawings by the analysis engine.',
+          }
+        : {}),
     })
     activeSection.value = 'All'
     query.value = ''
@@ -313,7 +377,10 @@ async function deleteItem(item) {
 function confidenceColor(c) {
   if (c >= 95) return 'text-success'
   if (c >= 90) return 'text-primary-dark'
-  return 'text-warning'
+  if (c >= 70) return 'text-warning'
+  // Below 70 the figure needs checking before it goes into a tender, and the
+  // colour should say so rather than blending in with the merely-uncertain.
+  return 'text-danger'
 }
 
 // Analysis polling runs on a timer in the documents store; stop it when the
@@ -533,8 +600,19 @@ onBeforeUnmount(() => documents.stopWatching())
                     @input="commitEdit(item, 'desc', $event.target.value)" @keydown.enter="finishEdit" />
                   <template v-else>
                     <span>{{ item.desc }}</span>
-                    <span v-if="item.sources && item.sources.length" class="block truncate text-[11px] text-brand-light" :title="item.sources.join(', ')">
-                      from {{ item.sources.join(', ') }}
+                    <span class="mt-0.5 flex items-center gap-1.5 text-[11px] text-brand-light">
+                      <span v-if="item.basis" class="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+                        :class="BASIS_LABELS[item.basis].tone" :title="BASIS_LABELS[item.basis].detail">
+                        {{ BASIS_LABELS[item.basis].label }}
+                      </span>
+                      <span v-if="item.sources && item.sources.length" class="truncate" :title="item.sources.join(', ')">
+                        from {{ item.sources.join(', ') }}
+                      </span>
+                    </span>
+                    <!-- An assumed quantity is only defensible if the rule behind
+                         it is on the page next to it. -->
+                    <span v-if="item.assumption" class="mt-0.5 block text-[11px] italic text-warning" :title="item.assumption">
+                      {{ item.assumption }}
                     </span>
                   </template>
                 </td>
@@ -555,9 +633,10 @@ onBeforeUnmount(() => documents.stopWatching())
                 </td>
                 <td class="px-2 py-3 text-right font-semibold text-secondary">{{ (item.qty * item.rate).toLocaleString() }}</td>
                 <td class="px-2 py-3 text-center">
-                  <span v-if="boqSource === 'engine' && item.confidence != null"
-                    class="text-xs font-bold" :class="confidenceColor(item.confidence)">{{ item.confidence }}%</span>
-                  <span v-else class="text-xs text-brand-light" title="Confidence is only reported for measured quantities">—</span>
+                  <span v-if="item.confidence != null"
+                    class="text-xs font-bold" :class="confidenceColor(item.confidence)"
+                    :title="item.basis ? BASIS_LABELS[item.basis].detail : ''">{{ item.confidence }}%</span>
+                  <span v-else class="text-xs text-brand-light" title="Confidence is only reported for quantities the engine derived">—</span>
                 </td>
                 <td class="px-5 py-3">
                   <div class="flex justify-end gap-1 transition-opacity group-hover:opacity-100" :class="editingId === item.id ? 'opacity-100' : 'opacity-0'">
@@ -610,7 +689,51 @@ onBeforeUnmount(() => documents.stopWatching())
           <form class="space-y-4 p-6" @submit.prevent="addItem">
             <div>
               <label class="label">Description</label>
-              <input v-model="draft.desc" class="input" placeholder="225mm sandcrete block wall in cement mortar" autofocus />
+              <div class="flex gap-2">
+                <input v-model="draft.desc" class="input flex-1" placeholder="225mm sandcrete block wall in cement mortar" autofocus
+                  @keydown.enter.prevent="measureFromDrawings" />
+                <button type="button" class="btn-outline btn-md shrink-0" :disabled="measuring || !draft.desc.trim()"
+                  title="Measure this item from the drawings already analysed for this project"
+                  @click="measureFromDrawings">
+                  <Sparkles class="h-4 w-4" :class="measuring ? 'animate-pulse' : ''" />
+                  {{ measuring ? 'Measuring…' : 'Measure' }}
+                </button>
+              </div>
+              <p class="mt-1 text-xs text-brand-light">
+                Describe the item and let the engine take the quantity off your drawings — or fill it in yourself.
+              </p>
+            </div>
+
+            <!-- What the engine found. Shown BEFORE the fields it filled, so the
+                 workings are read rather than scrolled past. -->
+            <div v-if="proposal" class="rounded-xl border px-4 py-3 text-sm"
+              :class="proposal.matched ? 'border-primary/30 bg-primary/5' : 'border-warning/30 bg-warning/5'">
+              <template v-if="proposal.matched">
+                <p class="flex flex-wrap items-center gap-1.5 font-semibold text-secondary">
+                  <span v-if="BASIS_LABELS[proposal.basis]" class="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"
+                    :class="BASIS_LABELS[proposal.basis].tone">{{ BASIS_LABELS[proposal.basis].label }}</span>
+                  {{ proposal.qty.toLocaleString() }} {{ proposal.unit }}
+                  <span v-if="proposal.confidence != null" class="text-xs font-bold" :class="confidenceColor(proposal.confidence)">
+                    {{ proposal.confidence }}%
+                  </span>
+                </p>
+                <p v-if="proposal.workings" class="mt-1 text-xs text-brand-muted">{{ proposal.workings }}</p>
+                <p v-if="proposal.assumption" class="mt-1 text-xs italic text-warning">{{ proposal.assumption }}</p>
+                <p v-if="proposal.sources?.length" class="mt-1 text-[11px] text-brand-light">
+                  from {{ proposal.sources.join(', ') }}
+                </p>
+                <p v-if="proposal.unpricedReason" class="mt-1 text-[11px] text-brand-light">
+                  {{ proposal.unpricedReason }} Enter a rate below.
+                </p>
+                <p class="mt-2 text-[11px] text-brand-light">
+                  Nothing has been added yet — check the figure, then press Add item.
+                </p>
+              </template>
+              <template v-else>
+                <p class="font-semibold text-secondary">Not measured</p>
+                <p class="mt-1 text-xs text-brand-muted">{{ proposal.reason }}</p>
+                <p class="mt-1 text-[11px] text-brand-light">Fill the quantity in yourself below.</p>
+              </template>
             </div>
             <div class="grid gap-4 sm:grid-cols-2">
               <div>
