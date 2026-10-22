@@ -81,6 +81,48 @@ function reason(err) {
     : 'The analysis engine could not be reached. Nothing has been measured.'
 }
 
+// Generation outlives the ~26 s the Netlify proxy will hold a request open, so
+// the server answers 202 with a run and this waits on the run instead. The cap
+// is generous: a large set of drawings can take minutes, and the server itself
+// declares a run lost after ten.
+const RUN_POLL_MS = 3000
+const RUN_MAX_WAIT_MS = 11 * 60 * 1000
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// A gateway hiccup on one poll says nothing about the run; anything else does.
+function isTransient(err) {
+  if (!(err instanceof ApiError)) return true // fetch itself failed — a dropped connection
+  return err.status === 502 || err.status === 503 || err.status === 504
+}
+
+async function waitForRun(projectId, run) {
+  const deadline = Date.now() + RUN_MAX_WAIT_MS
+  let current = run
+  let misses = 0
+
+  while (current.status === 'running') {
+    if (Date.now() > deadline) {
+      throw new ApiError(504, {
+        message: 'Generation is taking unusually long. It may still finish — reload this page in a few minutes.',
+      })
+    }
+    await sleep(RUN_POLL_MS)
+    try {
+      const res = await api.get(`/projects/${projectId}/boq/generations/${current.id}`)
+      current = res.generation
+      misses = 0
+    } catch (err) {
+      if (!isTransient(err) || ++misses > 5) throw err
+    }
+  }
+
+  if (current.status === 'failed') {
+    throw new ApiError(503, { message: current.error || 'Generation failed. Nothing was billed.' })
+  }
+  return current
+}
+
 /**
  * Build a Bill of Quantities from a project's drawings.
  *
@@ -100,11 +142,13 @@ export async function buildBoq(docs = [], { projectId, standard = 'NIQS', region
   try {
     // Generating stores a new revision server-side, so the bill has a history
     // and a variation can point at "Rev 2 → Rev 3" and mean something.
-    await api.post(`/projects/${projectId}/boq/generate`, {
+    const started = await api.post(`/projects/${projectId}/boq/generate`, {
       documentIds: drawings.map((d) => d.id),
       standard,
       region,
     })
+    // An older server finishes inside the POST and sends no run to wait on.
+    if (started?.generation) await waitForRun(projectId, started.generation)
 
     // Read the stored revision back, so what the screen shows is what the
     // server holds — not a separate copy that can drift from it.

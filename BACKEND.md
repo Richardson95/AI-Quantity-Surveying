@@ -1251,7 +1251,8 @@ frontend already models `Analyzing → Ready`.
 | Method | Path |
 | --- | --- |
 | GET | `/projects/{id}/boq` |
-| POST | `/projects/{id}/boq/generate` — from documents, async |
+| POST | `/projects/{id}/boq/generate` — from documents; answers `202 { generation }` at once |
+| GET | `/projects/{id}/boq/generations/{runId}` — poll until `status` is `succeeded` or `failed` |
 | POST | `/projects/{id}/boq/items` |
 | POST | `/projects/{id}/boq/items/quantify` — measure a described item off the drawings |
 | PATCH | `/boq/items/{itemId}` |
